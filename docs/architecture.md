@@ -2,6 +2,8 @@
 
 This describes the scaffold as implemented. The broader [implementation spec](implementation-spec.md) remains the target for subsequent milestones.
 
+Current scope is local Docker Compose delivery and Track A. Hosted database work is out of scope. See [conversation architecture](conversation-architecture.md) for the current cascade/realtime comparison and intent-first interaction design; voice remains unimplemented.
+
 ## Responsibilities
 
 | Part | Responsibility | Current status |

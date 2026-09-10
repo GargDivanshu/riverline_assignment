@@ -1,6 +1,8 @@
-﻿# Riverline
+# Riverline
 
 An English-only voice assistant for a realistic 30-day financial plan. This repository currently implements the authentication and workspace foundation, not the complete assignment.
+
+Current scope: **local Docker Compose delivery and Track A conversational intelligence**. Hosted databases and cloud deployment are out of scope. See [conversation architecture](docs/conversation-architecture.md) for the proposed voice pipeline and conversation acceptance cases.
 
 ## Current capabilities
 
@@ -66,10 +68,13 @@ For a production web build locally, use `npm run build` then `npm start` instead
 | `AGENT_API_URL` | Python URL: localhost:8000 locally, agent:8000 in Compose | Yes |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Both enable Google OAuth | Optional |
 | `DAILY_API_KEY` | Reserved for next milestone, unused today | Not yet |
+| `SARVAM_API_KEY`, `ELEVENLABS_API_KEY` | Speech provider options; adapters pending | Not yet |
+| `OPENROUTER_API_KEY` | Proposed text LLM route; adapter pending | Not yet |
+| `OPENAI_API_KEY` | Direct Realtime alternative; not connected | Not yet |
 
 For Google, create a Web application OAuth client in Google Cloud, configure its consent screen/test users, and register `http://localhost:3000/api/auth/callback/google` as an authorized redirect URI. Set both credentials in `.env` and restart. See [Google setup](https://better-auth.com/docs/authentication/google). Automatic account linking by matching email is disabled.
 
-Speech recognition, language-model and speech-synthesis providers have not been selected. Their keys and Daily room setup must be documented with the voice implementation.
+Daily, Sarvam, ElevenLabs, OpenAI and OpenRouter credentials are available locally but voice access has not been tested. The proposed first pipeline uses streaming speech recognition, GPT-5.6 Luna through OpenRouter and streaming speech synthesis. Provider adapters, model/voice configuration and Daily room startup remain unimplemented. See the conversation architecture comparison before selecting the final pipeline.
 
 ## Verification
 

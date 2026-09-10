@@ -1,6 +1,6 @@
 # Proposed scenario and acceptance matrix
 
-Status: designed cases only. No application tests have run. Synthetic values are fixtures, not financial advice or reconstructed demo facts.
+Status: proposed financial/conversation cases, not yet executed. Authentication scaffold tests are documented separately in verification.md. Synthetic values are fixtures, not financial advice or reconstructed demo facts.
 
 | Case | Input or event | Expected behavior |
 | --- | --- | --- |

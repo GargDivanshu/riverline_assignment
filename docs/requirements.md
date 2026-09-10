@@ -1,6 +1,6 @@
 ﻿# Requirements
 
-Source: `engineering-assignment.md`, read in full on 2026-09-10. The authentication/workspace scaffold is implemented; the assignment?s voice and financial acceptance checks remain pending. See [foundation verification](verification.md). See the [reference review](reference-review.md) for video observations and limitations, and the [proposed implementation spec](implementation-spec.md) for design details.
+Source: `engineering-assignment.md`, read in full on 2026-09-10. The authentication/workspace scaffold is implemented; the assignment's voice and financial acceptance checks remain pending. See [foundation verification](verification.md). See the [reference review](reference-review.md) for video observations and limitations, and the [proposed implementation spec](implementation-spec.md) for design details.
 
 ## Acceptance mapping
 
@@ -38,7 +38,7 @@ Choose at most one optional track after completing the core:
 - A: Conversational intelligence, demonstrated through real conversations.
 - B: Evaluation/regression testing, including a discovered failure, a change, and evidence of improvement.
 
-Core testing and conversation quality remain required whichever track is chosen. No optional track is selected.
+Core testing and conversation quality remain required whichever track is chosen. Track A is selected by the user. Local Docker Compose is the delivery target; hosted databases and cloud deployment are out of scope.
 
 ## Outstanding information
 

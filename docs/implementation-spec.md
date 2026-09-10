@@ -2,6 +2,8 @@
 
 Status: target design. The authentication/workspace foundation is implemented; see [architecture](architecture.md) for actual status and account-based authentication superseding the original anonymous-session proposal. Voice and financial behavior remain unimplemented and unbenchmarked. Grounded in `engineering-assignment.md`. This is a technical specification, not journal content. Research checked on 2026-09-10; see [integration research](integration-research.md).
 
+Current scope: local Docker Compose delivery and Track A conversational intelligence. See [conversation architecture](conversation-architecture.md) for the current provider comparison and intent-first interaction proposal. Hosted databases are out of scope.
+
 ## 1. Product outcome and scope
 
 Help an individual answer: **What can I pay over the next 30 days, on which dates, what remains uncovered, and what changes if uncertain money arrives?**
@@ -91,7 +93,7 @@ For a small business owner, distinguish gross sales, business expenses/reserves 
 
 ### Minimal persisted structure
 
-- `sessions`: owner capability hash, lifecycle status, horizon, current financial state JSON, monotonically increasing revision, timestamps and expiry.
+- `sessions`: authenticated owner user ID, lifecycle status, horizon, current financial state JSON, monotonically increasing revision, timestamps and expiry.
 - `financial_changes`: session, revision, operation id, source turn reference, validated change and timestamp; supports diagnosis and idempotency without requiring an event-sourcing framework.
 - `plans`: session/revision, deterministic calculation output, assumptions, unresolved items and understanding status.
 
@@ -174,13 +176,11 @@ Handle microphone denial, room/token failure, STT/LLM/TTS errors, tool timeout, 
 
 Docker Compose starts `web`, `agent`, and `db`, applies migrations automatically, and exposes the web app at proposed `http://localhost:3000`. The database and internal agent API stay on the Compose network. Health checks distinguish process liveness from dependency readiness. No cloud deployment is needed for submission.
 
-Postgres provides a direct later path to Supabase, which is Postgres-based; hosted Supabase is optional rather than a reviewer prerequisite. [Supabase database documentation](https://supabase.com/docs/guides/database/overview).
-
-If “virtual” in the prompt means Vercel, it can be considered for the frontend later. Run the voice agent on a service appropriate for long-lived sessions, such as a container host; AWS is an option only when hosting is actually needed. Do not make platform suitability depend on an unverified claim that Vercel categorically cannot handle WebSockets. Redis/queues become justified by multi-instance coordination or durable asynchronous jobs, not the presence of AI.
+Local Postgres in Compose is the database target. RDS, Supabase, Convex and cloud hosting are outside this submission scope.
 
 Configuration contract to finalise during the voice spike: `DAILY_API_KEY`, selected STT/LLM/TTS credentials and model identifiers, `DATABASE_URL`, session signing secret, internal service credential, public app origin and internal backend URL. `.env.example` must contain all actual required values with placeholders; README distinguishes required keys, optional settings and local defaults. Startup must identify missing configuration without printing secrets.
 
-For the local demo, use a server-issued, high-entropy session capability in an HttpOnly cookie; enforce ownership on every operation, same-origin protections, request limits and expiry. Do not expose a public unauthenticated paid-agent endpoint. Full account login is deferred. Explicitly describe retention/deletion, provider processing of voice/text and the absence of default recording before a live session.
+The scaffold already uses Better Auth email/password accounts and server-side sessions. Bind every financial session and tool operation to the authenticated user, enforce same-origin protections and limits, and keep provider keys server-side. Google is optional and does not block the assignment. Explain provider processing and the absence of default audio recording before a live session.
 
 ## 6. Interface
 
@@ -209,13 +209,13 @@ Collect unit/integration results separately from live conversation evidence. Use
 
 Measure voice response latency from detected end-of-user-turn to first audible response, and card latency from committed revision to rendered revision. Proposed initial targets are p95 voice response below 3 seconds and card update below 1 second on the documented test setup; these are targets, not measured claims. Report sample size, providers/models, hardware/network and failures.
 
-Optional Track B is a recommendation because correction and timing regressions provide concrete evidence, but no optional track is selected yet. First satisfy the core. Choose only one optional depth track.
+Track A is selected. Demonstrate relevant follow-ups, corrections, interruptions, retained context and understanding through real conversations. Core calculation and integration tests remain required; do not build a separate Track B evaluation platform.
 
 ## 8. Open choices before application scaffolding
 
 - Actual deadline and time available.
 - Voice-provider credentials/budget and the candidate's familiarity with Python/TypeScript.
 - Confirm remaining stack after the voice spike; tRPC is proposed, not a security guarantee.
-- Confirm whether Vercel was intended by “virtual”; hosting is not a prerequisite for local development.
+- Outdated hosting question, outside current scope: whether Vercel was intended by “virtual”; hosting is not a prerequisite for local development.
 
-No architecture in this document is presented as a user-approved decision. Revisit the spec as implementation evidence arrives.
+Local Docker delivery and Track A are explicit user requirements. Other unimplemented architecture details remain proposals unless stated otherwise. Revisit the spec as implementation evidence arrives.
