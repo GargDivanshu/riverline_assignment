@@ -1,0 +1,13 @@
+.git
+.Tmp
+.local
+node_modules
+**/node_modules
+**/.next
+**/.venv
+**/__pycache__
+.env
+.env.*
+*.mp4
+test-results
+playwright-report

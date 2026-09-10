@@ -1,0 +1,31 @@
+{
+  "name": "riverline",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/next.mjs dev",
+    "build": "node scripts/next.mjs build",
+    "start": "node scripts/start-web.mjs",
+    "db:migrate": "node --env-file-if-exists=.env --import tsx apps/web/scripts/migrate.ts",
+    "dev:db": "node scripts/local-db.mjs",
+    "lint": "npm run lint --workspace @riverline/web",
+    "typecheck": "npm run typecheck --workspace @riverline/web",
+    "test": "node --import tsx --test apps/web/tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "contracts:generate": "openapi-typescript services/agent/openapi.json -o apps/web/src/lib/api/schema.d.ts"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite-socket": "^0.2.11",
+    "@playwright/test": "latest",
+    "openapi-typescript": "latest",
+    "tsx": "latest"
+  }
+}

@@ -1,0 +1,8 @@
+# Optional host development: expose the two dependencies only to localhost.
+services:
+  db:
+    ports:
+      - "127.0.0.1:15432:5432"
+  agent:
+    ports:
+      - "127.0.0.1:8000:8000"
