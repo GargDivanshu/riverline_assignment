@@ -33,7 +33,9 @@ class VoiceState(BaseModel):
     error: str | None = None
     error_code: str | None = None
     retryable: bool = False
-    activity: Literal["connecting", "thinking", "speaking", "listening", "ended", "failed"] = "connecting"
+    activity: Literal["connecting", "thinking", "speaking", "listening", "ended", "failed"] = (
+        "connecting"
+    )
 
 
 class VoiceConnection(VoiceState):
@@ -87,7 +89,7 @@ class Session:
 
 
 class VoiceSessions:
-    def __init__(self, settings: Settings, run_pipeline=None, client=None):
+    def __init__(self, settings: Settings, run_pipeline=None, client=None, finance_store=None):
         self.settings = settings
         self.sessions: dict[str, Session] = {}
         self.lock = asyncio.Lock()
@@ -97,6 +99,7 @@ class VoiceSessions:
             headers={"Authorization": f"Bearer {settings.daily_api_key}"},
         )
         self.run_pipeline = run_pipeline
+        self.finance_store = finance_store
 
     async def start(self, owner: str, request_id: UUID) -> VoiceConnection:
         if not self.settings.voice_ready:
@@ -160,11 +163,23 @@ class VoiceSessions:
                 log_voice_error(public, error)
                 raise public.as_http_exception() from None
             session = Session(
-                sid, owner, room_url, room_name, tokens[0], tokens[1], expires, created_monotonic=started
+                sid,
+                owner,
+                room_url,
+                room_name,
+                tokens[0],
+                tokens[1],
+                expires,
+                created_monotonic=started,
             )
+            session.finance_store = self.finance_store
             self.sessions[sid] = session
             session.worker = asyncio.create_task(self.run(session))
-            logger.info("voice_session_created session_id={} room_setup_ms={}", sid, int((time.monotonic() - session.created_monotonic) * 1000))
+            logger.info(
+                "voice_session_created session_id={} room_setup_ms={}",
+                sid,
+                int((time.monotonic() - session.created_monotonic) * 1000),
+            )
             return session.connection()
 
     def get(self, owner: str, sid: str) -> Session:

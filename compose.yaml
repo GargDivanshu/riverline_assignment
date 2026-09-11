@@ -15,6 +15,7 @@ services:
   agent:
     build: ./services/agent
     environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-riverline}:${POSTGRES_PASSWORD:-local-development-only}@db:5432/${POSTGRES_DB:-riverline}
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:?Run npm run setup or configure .env first}
       DAILY_API_KEY: ${DAILY_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}

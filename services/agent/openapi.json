@@ -373,6 +373,90 @@
         ],
         "title": "MoneyFact"
       },
+      "PlanEvent": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "title": "Date"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "change_paise": {
+            "type": "integer",
+            "title": "Change Paise"
+          },
+          "balance_paise": {
+            "type": "integer",
+            "title": "Balance Paise"
+          }
+        },
+        "type": "object",
+        "required": [
+          "date",
+          "label",
+          "change_paise",
+          "balance_paise"
+        ],
+        "title": "PlanEvent"
+      },
+      "PlanSummary": {
+        "properties": {
+          "dated_income_paise": {
+            "type": "integer",
+            "title": "Dated Income Paise",
+            "default": 0
+          },
+          "dated_outgoings_paise": {
+            "type": "integer",
+            "title": "Dated Outgoings Paise",
+            "default": 0
+          },
+          "projected_closing_paise": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projected Closing Paise"
+          },
+          "lowest_balance_paise": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lowest Balance Paise"
+          },
+          "first_shortfall_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Shortfall Date"
+          },
+          "unplanned_fact_count": {
+            "type": "integer",
+            "title": "Unplanned Fact Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "PlanSummary"
+      },
       "StartVoice": {
         "properties": {
           "request_id": {
@@ -627,9 +711,23 @@
           },
           "plan_status": {
             "type": "string",
-            "const": "not_started",
+            "enum": [
+              "not_started",
+              "building",
+              "ready"
+            ],
             "title": "Plan Status",
             "default": "not_started"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/PlanSummary"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/PlanEvent"
+            },
+            "type": "array",
+            "title": "Timeline"
           },
           "voice_available": {
             "type": "boolean",

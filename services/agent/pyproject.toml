@@ -9,6 +9,7 @@ dependencies = [
   "pydantic-settings>=2.8,<3",
   "tzdata>=2025.2",
   "pipecat-ai[daily,elevenlabs,openrouter]>=0.0.105,<1",
+  "asyncpg==0.31.0",
 ]
 
 [dependency-groups]

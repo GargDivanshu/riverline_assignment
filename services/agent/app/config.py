@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     internal_api_secret: str = Field(min_length=32)
+    database_url: str = "postgresql://riverline:local-development-only@127.0.0.1:15432/riverline"
     daily_api_key: str = ""
     elevenlabs_api_key: str = ""
     openrouter_api_key: str = ""

@@ -115,6 +115,44 @@ export interface components {
              */
             certainty: "confirmed" | "estimated" | "uncertain" | "unknown";
         };
+        /** PlanEvent */
+        PlanEvent: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Label */
+            label: string;
+            /** Change Paise */
+            change_paise: number;
+            /** Balance Paise */
+            balance_paise: number;
+        };
+        /** PlanSummary */
+        PlanSummary: {
+            /**
+             * Dated Income Paise
+             * @default 0
+             */
+            dated_income_paise: number;
+            /**
+             * Dated Outgoings Paise
+             * @default 0
+             */
+            dated_outgoings_paise: number;
+            /** Projected Closing Paise */
+            projected_closing_paise?: number | null;
+            /** Lowest Balance Paise */
+            lowest_balance_paise?: number | null;
+            /** First Shortfall Date */
+            first_shortfall_date?: string | null;
+            /**
+             * Unplanned Fact Count
+             * @default 0
+             */
+            unplanned_fact_count: number;
+        };
         /** StartVoice */
         StartVoice: {
             /**
@@ -226,9 +264,12 @@ export interface components {
             /**
              * Plan Status
              * @default not_started
-             * @constant
+             * @enum {string}
              */
-            plan_status: "not_started";
+            plan_status: "not_started" | "building" | "ready";
+            summary?: components["schemas"]["PlanSummary"];
+            /** Timeline */
+            timeline?: components["schemas"]["PlanEvent"][];
             /**
              * Voice Available
              * @default false

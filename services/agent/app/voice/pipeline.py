@@ -1,6 +1,12 @@
-"""One live cascade. No recorded-message STT and no model-owned money arithmetic."""
+"""One live cascade with constrained tools for persisted financial facts."""
+
+from datetime import datetime
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from loguru import logger
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -13,33 +19,37 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
+from pydantic import ValidationError
 
 from app.config import Settings
 from app.errors import classify_voice_error, log_voice_error
+from app.finance import FinancialFactInput
 from app.voice.activity import VoiceActivityProcessor
 
 INSTRUCTIONS = """You are Riverline, a calm English-only financial conversation assistant.
-This is the live conversation milestone: financial calculation and saved plan tools are
-not connected yet. Explain that briefly once. Do not calculate totals, claim to save facts
-or generate a completed plan. You can understand the user's goal and clarify their inputs.
-On your first turn, warmly explain in one sentence that you can map what is coming in,
-what is due, and what needs attention over the next 30 days. Then invite the person to
-start wherever feels easiest: income, a payment, or something urgent. Do not open with
-"what brings you here". After that, ask one concise, relevant question at a time. Never
-conduct a fixed questionnaire. Remember facts within this call;
-do not ask again just to fill a template. Repetition is not a new income or debt.
-Let the user hesitate, restart and correct themselves. Acknowledge clear corrections;
-clarify ambiguous amounts or which debt they refer to. Never guess missing amounts/dates.
-Distinguish cash already available from money owed or expected; ask about timing and
-reliability when it changes their immediate concern. Separate debt balance from instalments,
-and business revenue from money available personally. Ask about responsibilities and
-protected spending when relevant. Age, occupation and city are not mandatory intake fields.
-Never shame spending, pressure cuts, recommend new loans, promise approval, invent lender
-offers or say a payment was made. Keep replies brief and conversational, without markdown.
-Speak only English, even if asked to switch languages. If unsure, say what needs clarification.
+You keep a 30-day money view in the workspace while speaking. The record_financial_fact
+tool is the only way to add or correct a fact. Call it before acknowledging any clear money
+fact. Never invent a number, date, lender, category, or certainty. If an amount, timing, or
+which payment the person means is unclear, ask one short clarification instead of using a tool.
+Use opening_cash only for money available now; income for money expected to arrive; commitment
+for loan EMIs, card bills, BNPL, and money owed to people; expense for usual spending. A debt
+balance and its monthly payment are different facts. Expected or owed money is not cash already
+available. Mark irregular or not-guaranteed income as estimated or uncertain. Use an ISO date
+only when the person gives a clear date or an unambiguous relative date. If no date is known,
+leave it out. Call get_financial_snapshot before explaining a plan or resolving a correction.
+The tools calculate; do not do arithmetic yourself and only describe numbers returned by them.
+
+The opening greeting already explained the purpose. Once the person agrees, ask the smallest
+next question that changes the 30-day plan. Usually learn their immediate goal, then one known
+income or payment, its amount and timing. Do not run a fixed questionnaire. Keep one question
+per turn and acknowledge corrections naturally. Age, occupation, city and family details are
+only useful when the person offers them or they affect their question. Never shame spending,
+pressure cuts, recommend new loans, promise approval, invent lender offers, or say a payment was
+made. Keep replies brief, conversational and without markdown. Speak only English.
 """
 
 OPENING = (
@@ -47,6 +57,113 @@ OPENING = (
     "payments you owe, and everyday spending. I’ll ask a few short questions and make "
     "the plan as we go. Are you ready to start?"
 )
+
+TOOLS = ToolsSchema(
+    standard_tools=[
+        FunctionSchema(
+            "record_financial_fact",
+            "Persist one clearly stated financial fact and recalculate the 30-day view.",
+            {
+                "category": {
+                    "type": "string",
+                    "enum": ["opening_cash", "income", "commitment", "expense"],
+                },
+                "label": {"type": "string", "description": "Short neutral label."},
+                "amount_rupees": {"type": "integer", "minimum": 0},
+                "due_date": {
+                    "type": "string",
+                    "description": "ISO date YYYY-MM-DD only when known.",
+                },
+                "certainty": {
+                    "type": "string",
+                    "enum": ["confirmed", "estimated", "uncertain", "unknown"],
+                },
+                "fact_id": {
+                    "type": "string",
+                    "description": "Existing id only when correcting a fact.",
+                },
+            },
+            ["category", "label", "amount_rupees", "certainty"],
+        ),
+        FunctionSchema(
+            "get_financial_snapshot",
+            "Read the persisted facts and deterministic 30-day projection before explaining it.",
+            {},
+            [],
+        ),
+    ]
+)
+
+
+def _tool_snapshot(snapshot) -> dict:
+    return {
+        "revision": snapshot.revision,
+        "plan_status": snapshot.plan_status,
+        "facts": {
+            "income": len(snapshot.income),
+            "commitments": len(snapshot.commitments),
+            "expenses": len(snapshot.expenses),
+            "opening_cash_paise": snapshot.opening_cash_paise,
+        },
+        "summary": snapshot.summary.model_dump(mode="json"),
+        "timeline": [event.model_dump(mode="json") for event in snapshot.timeline],
+    }
+
+
+async def _record_fact(params: FunctionCallParams, session) -> None:
+    try:
+        arguments = dict(params.arguments)
+        arguments["operation_id"] = uuid4()
+        snapshot = await session.finance_store.record(
+            session.owner, FinancialFactInput.model_validate(arguments)
+        )
+        logger.info(
+            "voice_tool_succeeded session_id={} tool=record_financial_fact revision={}",
+            session.id,
+            snapshot.revision,
+        )
+        await params.result_callback({"ok": True, "workspace": _tool_snapshot(snapshot)})
+    except (ValidationError, ValueError) as error:
+        logger.warning(
+            "voice_tool_rejected session_id={} tool=record_financial_fact error_type={}",
+            session.id,
+            type(error).__name__,
+        )
+        await params.result_callback(
+            {"ok": False, "error": "That fact needs a clearer amount, category, or date."}
+        )
+    except Exception as error:  # noqa: BLE001 - tool boundary returns a safe result
+        logger.error(
+            "voice_tool_failed session_id={} tool=record_financial_fact error_type={}",
+            session.id,
+            type(error).__name__,
+        )
+        await params.result_callback(
+            {
+                "ok": False,
+                "error": "The workspace could not save that fact. Ask the person to try again.",
+            }
+        )
+
+
+async def _get_snapshot(params: FunctionCallParams, session) -> None:
+    try:
+        snapshot = await session.finance_store.workspace(session.owner)
+        logger.info(
+            "voice_tool_succeeded session_id={} tool=get_financial_snapshot revision={}",
+            session.id,
+            snapshot.revision,
+        )
+        await params.result_callback({"ok": True, "workspace": _tool_snapshot(snapshot)})
+    except Exception as error:  # noqa: BLE001 - tool boundary returns a safe result
+        logger.error(
+            "voice_tool_failed session_id={} tool=get_financial_snapshot error_type={}",
+            session.id,
+            type(error).__name__,
+        )
+        await params.result_callback(
+            {"ok": False, "error": "The workspace is temporarily unavailable."}
+        )
 
 
 async def run_cascade(session, settings: Settings) -> None:
@@ -69,6 +186,12 @@ async def run_cascade(session, settings: Settings) -> None:
             max_completion_tokens=180,
         ),
     )
+    llm.register_function(
+        "record_financial_fact", lambda params: _record_fact(params, session), timeout_secs=8
+    )
+    llm.register_function(
+        "get_financial_snapshot", lambda params: _get_snapshot(params, session), timeout_secs=8
+    )
     tts = ElevenLabsTTSService(
         api_key=settings.elevenlabs_api_key,
         settings=ElevenLabsTTSService.Settings(
@@ -76,7 +199,15 @@ async def run_cascade(session, settings: Settings) -> None:
             model=settings.tts_model,
         ),
     )
-    context = LLMContext([{"role": "system", "content": INSTRUCTIONS}])
+    context = LLMContext(
+        [
+            {
+                "role": "system",
+                "content": f"Today is {datetime.now(ZoneInfo('Asia/Kolkata')).date().isoformat()}.\n{INSTRUCTIONS}",
+            }
+        ],
+        tools=TOOLS,
+    )
     user, assistant = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
@@ -108,7 +239,9 @@ async def run_cascade(session, settings: Settings) -> None:
     async def failed(_task, frame):
         source = getattr(getattr(frame, "processor", None), "name", None)
         public = classify_voice_error(
-            getattr(frame, "exception", None), source=source, description=getattr(frame, "error", None)
+            getattr(frame, "exception", None),
+            source=source,
+            description=getattr(frame, "error", None),
         )
         log_voice_error(public, getattr(frame, "exception", None), session_id=session.id)
         session.fail(public)

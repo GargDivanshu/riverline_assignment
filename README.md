@@ -8,7 +8,7 @@ Current scope: **local Docker Compose delivery and Track A conversational intell
 
 Email/password signup, login, persistent sessions, protected pages/API and signout work. Google OAuth is conditional on credentials and has not been verified with a live Google project. The responsive workspace uses shadcn/ui, ThinkingOrb and Motion, with income, commitments, essentials, plan sections and detail sheets. An authenticated tRPC query calls Python through a generated OpenAPI client.
 
-Live Daily/Pipecat cascade audio is implemented: browser microphone → Daily → ElevenLabs streaming speech recognition → OpenRouter model → ElevenLabs streaming speech synthesis → Daily. The browser starts a private, expiring room through the authenticated backend. Financial editing/persistence, calculations and repayment plans are not yet implemented; financial fields remain explicitly empty. Voice usage incurs provider costs. Email verification and password recovery remain unimplemented.
+Live Daily/Pipecat cascade audio is implemented: browser microphone → Daily → ElevenLabs streaming speech recognition → OpenRouter model → ElevenLabs streaming speech synthesis → Daily. The browser starts a private, expiring room through the authenticated backend. The model can call constrained tools to save clear income, commitments, expenses and available cash in local Postgres. A deterministic, paise-based 30-day projection updates the authenticated workspace while the call is active. It is a cash-flow view, not loan advice or a payment action. Voice usage incurs provider costs. Email verification and password recovery remain unimplemented.
 
 ## Docker startup
 
@@ -76,7 +76,7 @@ For a production web build locally, use `npm run build` then `npm start` instead
 
 For Google, create a Web application OAuth client in Google Cloud, configure its consent screen/test users, and register `http://localhost:3000/api/auth/callback/google` as an authorized redirect URI. Set both credentials in `.env` and restart. See [Google setup](https://better-auth.com/docs/authentication/google). Automatic account linking by matching email is disabled.
 
-The selected cascade uses Daily, ElevenLabs and OpenRouter. The browser asks for microphone permission only after you press **Start live conversation**. The app does not retain audio recordings. The agent is English-only, does not calculate or save financial facts in this milestone, and describes those limits during the call. Sarvam and direct OpenAI Realtime remain alternatives rather than fallbacks.
+The selected cascade uses Daily, ElevenLabs and OpenRouter. The browser asks for microphone permission only after you press **Start live conversation**. The app does not retain audio recordings. The agent is English-only. It saves only clear facts supplied in the call, asks a clarification when an amount/date is unclear, and calls the deterministic calculation layer rather than doing arithmetic in generated text. Sarvam and direct OpenAI Realtime remain alternatives rather than fallbacks.
 
 Voice failures use a shared safe error contract across Daily, ElevenLabs, OpenRouter, Pipecat and the tRPC boundary. Users receive a retryable message and reference code; provider response bodies, keys and conversation content never reach the browser or application logs. See [voice error handling](docs/error-handling.md).
 

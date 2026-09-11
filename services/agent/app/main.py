@@ -16,6 +16,7 @@ from app.errors import (
     VOICE_INVALID_REQUEST,
     PublicError,
 )
+from app.finance import FinanceStore
 from app.models import Workspace
 from app.voice.sessions import StartVoice, VoiceConnection, VoiceSessions, VoiceState
 
@@ -25,9 +26,16 @@ logger.disable("pipecat")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.voice = VoiceSessions(get_settings())
+    settings = get_settings()
+    app.state.finance = None
+    if settings.voice_ready:
+        app.state.finance = FinanceStore(settings.database_url)
+        await app.state.finance.open()
+    app.state.voice = VoiceSessions(settings, finance_store=app.state.finance)
     yield
     await app.state.voice.close()
+    if app.state.finance:
+        await app.state.finance.close()
 
 
 app = FastAPI(title="Riverline Agent API", version="0.1.0", lifespan=lifespan)
@@ -40,13 +48,17 @@ def _public_detail(detail: object, status_code: int) -> dict[str, str | bool]:
         return SERVICE_UNAUTHORIZED.detail()
     if status_code == 400:
         return USER_CONTEXT_REQUIRED.detail()
-    return PublicError("request_failed", "The request could not be completed.", status_code).detail()
+    return PublicError(
+        "request_failed", "The request could not be completed.", status_code
+    ).detail()
 
 
 @app.exception_handler(HTTPException)
 async def http_error_handler(_: Request, error: HTTPException) -> JSONResponse:
     detail = _public_detail(error.detail, error.status_code)
-    logger.warning("api_error path={} status={} code={}", _.url.path, error.status_code, detail["code"])
+    logger.warning(
+        "api_error path={} status={} code={}", _.url.path, error.status_code, detail["code"]
+    )
     return JSONResponse(status_code=error.status_code, content={"error": detail})
 
 
@@ -60,7 +72,9 @@ async def validation_error_handler(_: Request, __: RequestValidationError) -> JS
 async def unexpected_error_handler(_: Request, error: Exception) -> JSONResponse:
     # Never return exception text: provider responses may contain credentials or conversation content.
     logger.error("agent_unexpected_error exception_type={}", type(error).__name__)
-    public = PublicError("internal_error", "The service could not complete that request.", 500, True)
+    public = PublicError(
+        "internal_error", "The service could not complete that request.", 500, True
+    )
     return JSONResponse(status_code=500, content={"error": public.detail()})
 
 
@@ -82,15 +96,15 @@ def health() -> dict[str, str]:
 
 
 @app.get("/v1/workspace", response_model=Workspace, operation_id="get_workspace")
-def workspace(user_id: Annotated[str, Depends(require_service)]) -> Workspace:
-    # Auth is real; financial capture is deliberately not simulated in this foundation.
-    # Persistent, user-owned financial sessions replace this empty state next.
-    start = datetime.now(ZoneInfo("Asia/Kolkata")).date()
-    return Workspace(
-        window_start=start,
-        window_end_exclusive=start + timedelta(days=30),
-        voice_available=get_settings().voice_ready,
-    )
+async def workspace(
+    request: Request, user_id: Annotated[str, Depends(require_service)]
+) -> Workspace:
+    finance = getattr(request.app.state, "finance", None)
+    if not finance:
+        start = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+        return Workspace(window_start=start, window_end_exclusive=start + timedelta(days=30))
+    snapshot = await finance.workspace(user_id)
+    return snapshot.model_copy(update={"voice_available": get_settings().voice_ready})
 
 
 @app.post("/v1/voice/start", response_model=VoiceConnection, operation_id="start_voice")
