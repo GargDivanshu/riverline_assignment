@@ -76,6 +76,7 @@ expense. Explain purpose before asking a question, and never mention a form or s
 Do not repeat onboarding or ask what brought them here. Ask one focused question about the payment,
 income, expense, or plan change they want to discuss. Existing financial facts remain their context."""
 
+
 TOOLS = ToolsSchema(
     standard_tools=[
         FunctionSchema(
@@ -128,7 +129,14 @@ def _tool_snapshot(snapshot) -> dict:
     }
 
 
-async def _trace(session, event_type: str, *, role: str | None = None, content: str | None = None, metadata: dict | None = None) -> None:
+async def _trace(
+    session,
+    event_type: str,
+    *,
+    role: str | None = None,
+    content: str | None = None,
+    metadata: dict | None = None,
+) -> None:
     if not session.finance_store:
         return
     try:
@@ -141,7 +149,11 @@ async def _trace(session, event_type: str, *, role: str | None = None, content: 
             metadata=metadata,
         )
     except Exception as error:  # noqa: BLE001 - trace collection must never interrupt audio
-        logger.warning("conversation_trace_failed session_id={} error_type={}", session.id, type(error).__name__)
+        logger.warning(
+            "conversation_trace_failed session_id={} error_type={}",
+            session.id,
+            type(error).__name__,
+        )
 
 
 async def _record_fact(params: FunctionCallParams, session) -> None:
@@ -156,17 +168,37 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
             session.id,
             snapshot.revision,
         )
-        await _trace(session, "tool_completed", role="tool", metadata={"tool": "record_financial_fact", "revision": snapshot.revision})
+        await _trace(
+            session,
+            "tool_completed",
+            role="tool",
+            metadata={"tool": "record_financial_fact", "revision": snapshot.revision},
+        )
         await params.result_callback({"ok": True, "workspace": _tool_snapshot(snapshot)})
     except (ValidationError, ValueError) as error:
+        fields = (
+            [".".join(str(part) for part in item["loc"]) for item in error.errors()]
+            if isinstance(error, ValidationError)
+            else ["unknown"]
+        )
         logger.warning(
-            "voice_tool_rejected session_id={} tool=record_financial_fact error_type={}",
+            "voice_tool_rejected session_id={} tool=record_financial_fact error_type={} fields={}",
             session.id,
             type(error).__name__,
+            fields,
         )
-        await _trace(session, "tool_rejected", role="tool", metadata={"tool": "record_financial_fact"})
+        await _trace(
+            session,
+            "tool_rejected",
+            role="tool",
+            metadata={"tool": "record_financial_fact", "fields": fields},
+        )
         await params.result_callback(
-            {"ok": False, "error": "That fact needs a clearer amount, category, or date."}
+            {
+                "ok": False,
+                "error": "The fact was not saved. Ask one short clarification for the missing field; do not retry the same call.",
+                "invalid_fields": fields,
+            }
         )
     except Exception as error:  # noqa: BLE001 - tool boundary returns a safe result
         logger.error(
@@ -174,7 +206,9 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
             session.id,
             type(error).__name__,
         )
-        await _trace(session, "tool_failed", role="tool", metadata={"tool": "record_financial_fact"})
+        await _trace(
+            session, "tool_failed", role="tool", metadata={"tool": "record_financial_fact"}
+        )
         await params.result_callback(
             {
                 "ok": False,
@@ -191,7 +225,12 @@ async def _get_snapshot(params: FunctionCallParams, session) -> None:
             session.id,
             snapshot.revision,
         )
-        await _trace(session, "tool_completed", role="tool", metadata={"tool": "get_financial_snapshot", "revision": snapshot.revision})
+        await _trace(
+            session,
+            "tool_completed",
+            role="tool",
+            metadata={"tool": "get_financial_snapshot", "revision": snapshot.revision},
+        )
         await params.result_callback({"ok": True, "workspace": _tool_snapshot(snapshot)})
     except Exception as error:  # noqa: BLE001 - tool boundary returns a safe result
         logger.error(
@@ -199,7 +238,9 @@ async def _get_snapshot(params: FunctionCallParams, session) -> None:
             session.id,
             type(error).__name__,
         )
-        await _trace(session, "tool_failed", role="tool", metadata={"tool": "get_financial_snapshot"})
+        await _trace(
+            session, "tool_failed", role="tool", metadata={"tool": "get_financial_snapshot"}
+        )
         await params.result_callback(
             {"ok": False, "error": "The workspace is temporarily unavailable."}
         )
@@ -254,7 +295,9 @@ async def run_cascade(session, settings: Settings) -> None:
     )
     user, assistant = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(), user_turn_stop_timeout=1.25
+        ),
     )
     transcript = TranscriptProcessor()
 
@@ -262,15 +305,33 @@ async def run_cascade(session, settings: Settings) -> None:
     async def transcript_update(_processor, frame):
         for message in frame.messages:
             if message.role in {"user", "assistant"} and message.content.strip():
-                await _trace(session, "transcript", role=message.role, content=message.content.strip())
+                await _trace(
+                    session, "transcript", role=message.role, content=message.content.strip()
+                )
 
     activity = VoiceActivityProcessor(session)
     # Universal aggregation retains context and supports interruption/semantic turn handling.
     task = PipelineTask(
-        Pipeline([transport.input(), stt, transcript.user(), user, llm, tts, transport.output(), activity, transcript.assistant(), assistant]),
+        Pipeline(
+            [
+                transport.input(),
+                stt,
+                transcript.user(),
+                user,
+                llm,
+                tts,
+                transport.output(),
+                activity,
+                transcript.assistant(),
+                assistant,
+            ]
+        ),
         params=PipelineParams(audio_in_sample_rate=16000, audio_out_sample_rate=24000),
         enable_rtvi=False,
-        idle_timeout_secs=60,
+        # A silent participant is not an error. The session endpoint enforces its
+        # own maximum duration, while this keeps an unfinished spoken turn from
+        # being terminated after one minute.
+        idle_timeout_secs=0,
     )
     session.pipeline = task
     logger.info("voice_pipeline_stage session_id={} stage=running", session.id)

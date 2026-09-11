@@ -37,6 +37,40 @@ class FinancialFactInput(BaseModel):
                 return int(cleaned)
         raise ValueError("amount must be a whole number of rupees")
 
+    @field_validator("due_date", mode="before")
+    @classmethod
+    def normalize_due_date(cls, value: object) -> object:
+        if value is None or isinstance(value, date):
+            return value
+        if not isinstance(value, str):
+            raise TypeError("date must be text")
+        text = value.strip().lower()
+        today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+        if text in {"end of this month", "month end", "by month end"}:
+            next_month = today.replace(day=28) + timedelta(days=4)
+            return next_month - timedelta(days=next_month.day)
+        if text in {"end of next month", "next month end"}:
+            next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+            after_next = next_month.replace(day=28) + timedelta(days=4)
+            return after_next - timedelta(days=after_next.day)
+        for pattern in ("%B %d", "%b %d", "%d %B", "%d %b"):
+            try:
+                parsed = (
+                    datetime.strptime(value.strip(), pattern)
+                    .replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+                    .date()
+                    .replace(year=today.year)
+                )
+                return parsed if parsed >= today else parsed.replace(year=today.year + 1)
+            except ValueError:
+                continue
+        return value
+
+    @field_validator("fact_id", mode="before")
+    @classmethod
+    def normalize_empty_fact_id(cls, value: object) -> object:
+        return None if isinstance(value, str) and value in {"", "null", "None"} else value
+
     @field_validator("category")
     @classmethod
     def valid_category(cls, value: str) -> str:
@@ -47,7 +81,9 @@ class FinancialFactInput(BaseModel):
     @field_validator("certainty")
     @classmethod
     def valid_certainty(cls, value: str) -> str:
-        value = {"certain": "confirmed", "likely": "estimated", "variable": "uncertain"}.get(value, value)
+        value = {"certain": "confirmed", "likely": "estimated", "variable": "uncertain"}.get(
+            value, value
+        )
         if value not in {"confirmed", "estimated", "uncertain", "unknown"}:
             raise ValueError("unsupported certainty")
         return value
@@ -214,7 +250,9 @@ class FinanceStore:
         await self._pool().execute(
             """INSERT INTO riverline_conversations (id, user_id, mode)
                VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING""",
-            UUID(conversation_id), user_id, mode,
+            UUID(conversation_id),
+            user_id,
+            mode,
         )
 
     async def record_conversation_event(
@@ -231,15 +269,23 @@ class FinanceStore:
             """INSERT INTO riverline_conversation_events
                (conversation_id, event_type, role, content, elapsed_ms, metadata)
                VALUES ($1, $2, $3, $4, $5, $6::jsonb)""",
-            UUID(conversation_id), event_type, role, content, elapsed_ms,
+            UUID(conversation_id),
+            event_type,
+            role,
+            content,
+            elapsed_ms,
             json.dumps(metadata or {}),
         )
 
-    async def finish_conversation(self, conversation_id: str, status: str, failure_code: str | None = None) -> None:
+    async def finish_conversation(
+        self, conversation_id: str, status: str, failure_code: str | None = None
+    ) -> None:
         await self._pool().execute(
             """UPDATE riverline_conversations SET status=$2, ended_at=now(), failure_code=$3
                WHERE id=$1""",
-            UUID(conversation_id), status, failure_code,
+            UUID(conversation_id),
+            status,
+            failure_code,
         )
 
     async def conversations(self, user_id: str) -> list[dict]:
@@ -254,7 +300,8 @@ class FinanceStore:
         row = await self._pool().fetchrow(
             """SELECT id, mode, status, started_at, ended_at, failure_code
                FROM riverline_conversations WHERE id=$1 AND user_id=$2""",
-            UUID(conversation_id), user_id,
+            UUID(conversation_id),
+            user_id,
         )
         if not row:
             return None
