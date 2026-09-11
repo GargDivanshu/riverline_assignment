@@ -8,11 +8,8 @@ dependencies = [
   "uvicorn>=0.34,<1",
   "pydantic-settings>=2.8,<3",
   "tzdata>=2025.2",
+  "pipecat-ai[daily,elevenlabs,openrouter]>=0.0.105,<1",
 ]
-
-[project.optional-dependencies]
-# Install inside Linux for the next voice milestone. No unused provider adapters yet.
-voice = ["pipecat-ai[daily]>=0.0.100,<2"]
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.11,<1"]

@@ -5,6 +5,7 @@ import { ArrowDownLeft, ArrowRight, ArrowUpRight, AudioLines, CalendarDays, Chec
 import { motion } from "motion/react";
 import { Brand } from "./brand";
 import { VoiceOrb } from "./voice-orb";
+import { LiveConversation } from "./live-conversation";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "./ui/sheet";
@@ -24,6 +25,7 @@ export function WorkspaceView({ user }: { user: { name: string; email: string } 
   const router = useRouter();
   const [panel, setPanel] = useState<Panel>(null);
   const [dialog, setDialog] = useState<"voice" | "privacy" | null>(null);
+  const [voiceActive, setVoiceActive] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [accountError, setAccountError] = useState("");
   const state = trpc.workspace.get.useQuery();
@@ -53,7 +55,7 @@ export function WorkspaceView({ user }: { user: { name: string; email: string } 
       </main>
     </div>
     <Sheet open={Boolean(panel)} onOpenChange={open => { if (!open) setPanel(null); }}><SheetContent className="detail-sheet">{activePanel && <><SheetHeader><SheetTitle>{activePanel.title}</SheetTitle><SheetDescription>{activePanel.description}</SheetDescription></SheetHeader><div className="sheet-empty"><activePanel.icon size={30} /><h3>{activePanel.empty}</h3><p>{activePanel.detail}</p></div></>}</SheetContent></Sheet>
-    <Dialog open={Boolean(dialog)} onOpenChange={open => { if (!open) setDialog(null); }}><DialogContent className="info-dialog"><DialogHeader><DialogTitle>{dialog === "voice" ? "Your workspace is ready." : "Your information, your choices."}</DialogTitle><DialogDescription>{dialog === "voice" ? "Live conversations are the next step. Voice isn’t connected in this version, so your microphone won’t be opened." : "This version stores your account and sign-in session. Financial conversations and bank connections haven’t been enabled."}</DialogDescription></DialogHeader><div className="dialog-points">{(dialog === "voice" ? ["Speak in English, naturally", "Correct a number whenever you need", "Review every step before making changes"] : ["No bank accounts are connected", "No microphone audio is being recorded", "Google sign-in is optional when available"]).map(text => <div key={text}><Check size={16} /><span>{text}</span></div>)}</div><Button onClick={() => setDialog(null)}>Back to workspace</Button></DialogContent></Dialog>
+    <Dialog open={Boolean(dialog)} onOpenChange={open => { if (!open && !voiceActive) setDialog(null); }}><DialogContent className="info-dialog"><DialogHeader><DialogTitle>{dialog === "voice" ? "Your live conversation." : "Your information, your choices."}</DialogTitle><DialogDescription>{dialog === "voice" ? "Speak naturally, pause, and correct yourself whenever you need." : "This version stores your account and sign-in session. Live voice is processed by the configured providers. Financial plans and bank connections are not connected yet."}</DialogDescription></DialogHeader>{dialog === "voice" && <LiveConversation onActiveChange={setVoiceActive} />}<div className="dialog-points">{(dialog === "voice" ? [] : ["No bank accounts are connected", "The app does not save audio recordings", "Google sign-in is optional when available"]).map(text => <div key={text}><Check size={16} /><span>{text}</span></div>)}</div><Button disabled={voiceActive} onClick={() => setDialog(null)}>{voiceActive ? "End the conversation before leaving" : "Back to workspace"}</Button></DialogContent></Dialog>
   </div>;
 }
 

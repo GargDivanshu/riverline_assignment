@@ -22,7 +22,8 @@ test('create account, inspect workspace, sign out, and sign back in', async ({ p
   await expect(page.getByRole('main').getByRole('alert')).toHaveCount(0);
   await page.screenshot({ path: '.Tmp/workspace-desktop.png', fullPage: true });
   await page.getByRole('button', { name: /Start a conversation/ }).click();
-  await expect(page.getByRole('dialog')).toContainText('Voice isn’t connected');
+  await expect(page.getByRole('dialog')).toContainText('Speak naturally, pause, and correct yourself');
+  await expect(page.getByRole('button', { name: 'Start live conversation' })).toBeVisible();
   await page.getByRole('button', { name: 'Back to workspace' }).click();
   await page.getByRole('button', { name: /Incoming money/ }).click();
   await expect(page.getByRole('dialog')).toContainText('Your income sources will appear here');

@@ -22,4 +22,4 @@ class Workspace(BaseModel):
     commitments: list[MoneyFact] = Field(default_factory=list)
     expenses: list[MoneyFact] = Field(default_factory=list)
     plan_status: Literal["not_started"] = "not_started"
-    voice_available: Literal[False] = False
+    voice_available: bool = False

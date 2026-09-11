@@ -1,6 +1,10 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+.live-conversation { display: grid; gap: 16px; font-size: 14px; line-height: 1.7; }
+.live-conversation audio { width: 100%; height: 36px; }
+.live-conversation [role="alert"] { color: #ac263b; }
+
 :root {
   --background: #f7f9fc; --foreground: #172238;
   --card: #fff; --card-foreground: #172238;

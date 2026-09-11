@@ -10,7 +10,7 @@ The current foundation provides login, protected APIs, an empty responsive works
 
 ## Proposed first architecture
 
-Use one streaming cascade: Daily transport -> Pipecat turn handling -> streaming STT -> GPT-5.6 Luna through OpenRouter -> streaming TTS -> Daily. Use ElevenLabs realtime STT and streaming TTS as the initial quality-oriented candidate, following the user's preference. Compare Sarvam's realtime STT and TTS as the cost-oriented candidate when the first path works. Provider preference is not evidence of relative measured quality or cost.
+Use one streaming cascade: Daily transport -> Pipecat turn handling -> streaming STT -> GPT-5.6 Terra through OpenRouter -> streaming TTS -> Daily. Use ElevenLabs realtime STT and streaming TTS as the initial quality-oriented candidate, following the user's preference. Compare Sarvam's realtime STT and TTS as the cost-oriented candidate when the first path works. Provider preference is not evidence of relative measured quality or cost.
 
 Pipecat coordinates streams, interruptions and context. A single conversational LLM asks questions and proposes tools. Python tools validate changes, compute integer-paise/date-based results and persist a revision in local Postgres. Both speech and cards use that revision. Streaming ordinary conversational text to TTS is allowed; numeric conclusions wait for committed tool results. Cancel stale generation and audio after a correction. Track what was actually played so interrupted, unheard speech is not treated as acknowledged information.
 
@@ -20,7 +20,7 @@ The alternative is Daily -> Pipecat -> direct OpenAI Realtime (`gpt-realtime-2.1
 
 ## Evidence and limits
 
-- [OpenAI Luna model](https://developers.openai.com/api/docs/models/gpt-5.6-luna): text/image input and text output, streaming, function calling and structured outputs. It is not an audio model. OpenRouter's public model catalog returned `openai/gpt-5.6-luna` with tools and structured-output parameters on this review; this does not verify this account's inference access.
+- [OpenAI Terra model](https://developers.openai.com/api/docs/models/gpt-5.6-terra): text/image input and text output, streaming, function calling and structured outputs. It is not an audio model. OpenRouter's public model catalog needs a live model-access check for this account before depending on it.
 - [OpenAI Realtime Mini model](https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini): audio/text input and output and function calling; structured outputs are not supported. Validate tool arguments on the server in either architecture. The generic model-card streaming field should not be treated as a prohibition on Realtime audio: the documented service provides real-time audio sessions.
 - [OpenAI voice architectures](https://developers.openai.com/api/docs/guides/voice-agents): chained workflows expose intermediate text and allow independent component replacement.
 - [Pipecat Realtime service](https://docs.pipecat.ai/api-reference/server/services/s2s/openai): instructions, tools and turn detection are configurable. Exact requested-model compatibility still needs a live test with our pinned version.

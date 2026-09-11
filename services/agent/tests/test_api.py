@@ -39,6 +39,18 @@ def test_new_workspace_preserves_unknown_cash_and_exact_horizon():
     assert state["voice_available"] is False
 
 
-def test_voice_never_claims_to_connect_before_implementation():
-    assert client.post("/v1/voice/start", headers=headers).status_code == 501
+def test_voice_requires_configuration_and_valid_request():
+    with TestClient(app) as live_client:
+        response = live_client.post(
+            "/v1/voice/start",
+            headers=headers,
+            json={"request_id": "7f974566-a1be-4c66-b451-53844c42d98e"},
+        )
+        assert response.status_code == 503
+        assert (
+            live_client.post(
+                "/v1/voice/start", headers=headers, json={"request_id": "bad"}
+            ).status_code
+            == 422
+        )
     assert client.post("/v1/voice/start").status_code == 401
