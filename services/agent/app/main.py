@@ -115,6 +115,19 @@ async def workspace(
     return snapshot.model_copy(update={"voice_available": get_settings().voice_ready})
 
 
+@app.get("/v1/conversations/latest", operation_id="get_latest_conversation")
+async def latest_conversation(
+    request: Request, user_id: Annotated[str, Depends(require_service)]
+) -> dict | None:
+    finance = getattr(request.app.state, "finance", None)
+    if not finance:
+        return None
+    conversations = await finance.conversations(user_id)
+    if not conversations:
+        return None
+    return await finance.conversation(user_id, str(conversations[0]["id"]))
+
+
 @app.post("/v1/voice/start", response_model=VoiceConnection, operation_id="start_voice")
 async def start_voice(
     body: StartVoice,

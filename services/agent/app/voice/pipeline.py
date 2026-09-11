@@ -1,5 +1,6 @@
 """One live cascade with constrained tools for persisted financial facts."""
 
+import time
 from datetime import datetime
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -17,6 +18,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.transcript_processor import TranscriptProcessor
 from pipecat.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.llm_service import FunctionCallParams
@@ -126,6 +128,22 @@ def _tool_snapshot(snapshot) -> dict:
     }
 
 
+async def _trace(session, event_type: str, *, role: str | None = None, content: str | None = None, metadata: dict | None = None) -> None:
+    if not session.finance_store:
+        return
+    try:
+        await session.finance_store.record_conversation_event(
+            session.id,
+            event_type,
+            role=role,
+            content=content,
+            elapsed_ms=int((time.monotonic() - session.created_monotonic) * 1000),
+            metadata=metadata,
+        )
+    except Exception as error:  # noqa: BLE001 - trace collection must never interrupt audio
+        logger.warning("conversation_trace_failed session_id={} error_type={}", session.id, type(error).__name__)
+
+
 async def _record_fact(params: FunctionCallParams, session) -> None:
     try:
         arguments = dict(params.arguments)
@@ -138,6 +156,7 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
             session.id,
             snapshot.revision,
         )
+        await _trace(session, "tool_completed", role="tool", metadata={"tool": "record_financial_fact", "revision": snapshot.revision})
         await params.result_callback({"ok": True, "workspace": _tool_snapshot(snapshot)})
     except (ValidationError, ValueError) as error:
         logger.warning(
@@ -145,6 +164,7 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
             session.id,
             type(error).__name__,
         )
+        await _trace(session, "tool_rejected", role="tool", metadata={"tool": "record_financial_fact"})
         await params.result_callback(
             {"ok": False, "error": "That fact needs a clearer amount, category, or date."}
         )
@@ -154,6 +174,7 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
             session.id,
             type(error).__name__,
         )
+        await _trace(session, "tool_failed", role="tool", metadata={"tool": "record_financial_fact"})
         await params.result_callback(
             {
                 "ok": False,
@@ -170,6 +191,7 @@ async def _get_snapshot(params: FunctionCallParams, session) -> None:
             session.id,
             snapshot.revision,
         )
+        await _trace(session, "tool_completed", role="tool", metadata={"tool": "get_financial_snapshot", "revision": snapshot.revision})
         await params.result_callback({"ok": True, "workspace": _tool_snapshot(snapshot)})
     except Exception as error:  # noqa: BLE001 - tool boundary returns a safe result
         logger.error(
@@ -177,6 +199,7 @@ async def _get_snapshot(params: FunctionCallParams, session) -> None:
             session.id,
             type(error).__name__,
         )
+        await _trace(session, "tool_failed", role="tool", metadata={"tool": "get_financial_snapshot"})
         await params.result_callback(
             {"ok": False, "error": "The workspace is temporarily unavailable."}
         )
@@ -233,10 +256,18 @@ async def run_cascade(session, settings: Settings) -> None:
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
     )
+    transcript = TranscriptProcessor()
+
+    @transcript.event_handler("on_transcript_update")
+    async def transcript_update(_processor, frame):
+        for message in frame.messages:
+            if message.role in {"user", "assistant"} and message.content.strip():
+                await _trace(session, "transcript", role=message.role, content=message.content.strip())
+
     activity = VoiceActivityProcessor(session)
     # Universal aggregation retains context and supports interruption/semantic turn handling.
     task = PipelineTask(
-        Pipeline([transport.input(), stt, user, llm, tts, transport.output(), activity, assistant]),
+        Pipeline([transport.input(), stt, transcript.user(), user, llm, tts, transport.output(), activity, transcript.assistant(), assistant]),
         params=PipelineParams(audio_in_sample_rate=16000, audio_out_sample_rate=24000),
         enable_rtvi=False,
         idle_timeout_secs=60,
@@ -247,12 +278,14 @@ async def run_cascade(session, settings: Settings) -> None:
     @transport.event_handler("on_joined")
     async def transport_joined(_transport, _data):
         logger.info("voice_bot_joined session_id={}", session.id)
+        await _trace(session, "bot_joined", role="system")
 
     @transport.event_handler("on_error")
     async def transport_error(_transport, error):
         # The Daily message can contain transport internals; log only its safe classification.
         public = classify_voice_error(source="daily", description=error)
         log_voice_error(public, session_id=session.id)
+        await _trace(session, "transport_failed", role="system", metadata={"code": public.code})
         session.fail(public)
         await task.cancel()
 
@@ -261,19 +294,23 @@ async def run_cascade(session, settings: Settings) -> None:
         # The room remains usable for output, but the event is visible in the same session trace.
         public = classify_voice_error(source="elevenlabs", description=error)
         log_voice_error(public, session_id=session.id)
+        await _trace(session, "transcription_failed", role="system", metadata={"code": public.code})
 
     @transport.event_handler("on_first_participant_joined")
     async def joined(_transport, participant):
         session.status = "active"
         session.activity = "thinking"
         logger.info("voice_participant_joined session_id={}", session.id)
+        await _trace(session, "participant_joined", role="system")
         opening = NEW_OPENING if session.conversation_mode == "new" else RETURNING_OPENING
         await task.queue_frames([TTSSpeakFrame(opening, append_to_context=True)])
         logger.info("voice_opening_queued session_id={}", session.id)
+        await _trace(session, "opening_queued", role="assistant", content=opening)
 
     @transport.event_handler("on_participant_left")
     async def left(_transport, participant, reason):
         logger.info("voice_participant_left session_id={}", session.id)
+        await _trace(session, "participant_left", role="system")
         await task.cancel()
 
     @task.event_handler("on_pipeline_error")
@@ -285,6 +322,7 @@ async def run_cascade(session, settings: Settings) -> None:
             description=getattr(frame, "error", None),
         )
         log_voice_error(public, getattr(frame, "exception", None), session_id=session.id)
+        await _trace(session, "pipeline_failed", role="system", metadata={"code": public.code})
         session.fail(public)
         await task.cancel()
 

@@ -178,6 +178,8 @@ class VoiceSessions:
                 created_monotonic=started,
             )
             session.finance_store = self.finance_store
+            if self.finance_store:
+                await self.finance_store.start_conversation(sid, owner, conversation_mode)
             self.sessions[sid] = session
             session.worker = asyncio.create_task(self.run(session))
             logger.info(
@@ -213,6 +215,10 @@ class VoiceSessions:
                 session.status = "ended"
                 session.activity = "ended"
             await self.delete_room(session.room_name)
+            if self.finance_store:
+                await self.finance_store.finish_conversation(
+                    session.id, session.status, session.error_code
+                )
             logger.info(
                 "voice_pipeline_finished session_id={} status={} elapsed_ms={}",
                 session.id,

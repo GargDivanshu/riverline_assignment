@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, datetime, timedelta
 from uuid import UUID, uuid4
@@ -80,6 +81,29 @@ CREATE TABLE IF NOT EXISTS riverline_finance_facts (
 );
 CREATE INDEX IF NOT EXISTS riverline_finance_facts_workspace_idx
   ON riverline_finance_facts(workspace_id, active, due_date);
+CREATE TABLE IF NOT EXISTS riverline_conversations (
+  id uuid PRIMARY KEY,
+  user_id text NOT NULL,
+  mode text NOT NULL CHECK (mode IN ('new', 'returning')),
+  status text NOT NULL DEFAULT 'starting',
+  started_at timestamptz NOT NULL DEFAULT now(),
+  ended_at timestamptz NULL,
+  failure_code text NULL
+);
+CREATE INDEX IF NOT EXISTS riverline_conversations_owner_idx
+  ON riverline_conversations(user_id, started_at DESC);
+CREATE TABLE IF NOT EXISTS riverline_conversation_events (
+  id bigserial PRIMARY KEY,
+  conversation_id uuid NOT NULL REFERENCES riverline_conversations(id) ON DELETE CASCADE,
+  event_type text NOT NULL,
+  role text NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
+  content text NULL,
+  occurred_at timestamptz NOT NULL DEFAULT now(),
+  elapsed_ms integer NULL,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS riverline_conversation_events_conversation_idx
+  ON riverline_conversation_events(conversation_id, id);
 """
 
 
@@ -185,6 +209,63 @@ class FinanceStore:
             for row in rows
         ]
         return build_workspace(facts, int(workspace["revision"]), start, end)
+
+    async def start_conversation(self, conversation_id: str, user_id: str, mode: str) -> None:
+        await self._pool().execute(
+            """INSERT INTO riverline_conversations (id, user_id, mode)
+               VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING""",
+            UUID(conversation_id), user_id, mode,
+        )
+
+    async def record_conversation_event(
+        self,
+        conversation_id: str,
+        event_type: str,
+        *,
+        role: str | None = None,
+        content: str | None = None,
+        elapsed_ms: int | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        await self._pool().execute(
+            """INSERT INTO riverline_conversation_events
+               (conversation_id, event_type, role, content, elapsed_ms, metadata)
+               VALUES ($1, $2, $3, $4, $5, $6::jsonb)""",
+            UUID(conversation_id), event_type, role, content, elapsed_ms,
+            json.dumps(metadata or {}),
+        )
+
+    async def finish_conversation(self, conversation_id: str, status: str, failure_code: str | None = None) -> None:
+        await self._pool().execute(
+            """UPDATE riverline_conversations SET status=$2, ended_at=now(), failure_code=$3
+               WHERE id=$1""",
+            UUID(conversation_id), status, failure_code,
+        )
+
+    async def conversations(self, user_id: str) -> list[dict]:
+        rows = await self._pool().fetch(
+            """SELECT id, mode, status, started_at, ended_at, failure_code
+               FROM riverline_conversations WHERE user_id=$1 ORDER BY started_at DESC LIMIT 30""",
+            user_id,
+        )
+        return [dict(row) for row in rows]
+
+    async def conversation(self, user_id: str, conversation_id: str) -> dict | None:
+        row = await self._pool().fetchrow(
+            """SELECT id, mode, status, started_at, ended_at, failure_code
+               FROM riverline_conversations WHERE id=$1 AND user_id=$2""",
+            UUID(conversation_id), user_id,
+        )
+        if not row:
+            return None
+        events = await self._pool().fetch(
+            """SELECT id, event_type, role, content, occurred_at, elapsed_ms, metadata
+               FROM riverline_conversation_events WHERE conversation_id=$1 ORDER BY id""",
+            UUID(conversation_id),
+        )
+        result = dict(row)
+        result["events"] = [dict(event) for event in events]
+        return result
 
 
 def build_workspace(facts: list[dict], revision: int, start: date, end: date) -> Workspace:

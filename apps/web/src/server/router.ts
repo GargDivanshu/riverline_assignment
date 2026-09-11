@@ -55,5 +55,17 @@ export const appRouter = router({
       }
     }),
   }),
+  conversation: router({
+    latest: protectedProcedure.query(async ({ ctx }) => {
+      try {
+        const { data, error } = await agentClient(ctx.session.user.id).GET("/v1/conversations/latest");
+        if (error) throw agentError({ error }, "Your conversation trace couldn't be loaded.");
+        return data;
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        throw networkError("Your conversation trace couldn't be loaded.");
+      }
+    }),
+  }),
 });
 export type AppRouter = typeof appRouter;
