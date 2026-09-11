@@ -14,6 +14,7 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
   const [audioBlocked, setAudioBlocked] = useState(false);
   const call = useRef<DailyCall | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
+  const microphone = useRef<MediaStream | null>(null);
   const busy = useRef(false);
   const cancelled = useRef(false);
   const attempt = useRef<string | null>(null);
@@ -60,6 +61,8 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
     const current = call.current;
     call.current = null;
     if (current) await current.destroy();
+    microphone.current?.getTracks().forEach(track => track.stop());
+    microphone.current = null;
     if (joinTimeout.current) clearTimeout(joinTimeout.current);
     joinTimeout.current = null;
     agentSpoke.current = false;
@@ -88,7 +91,12 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       // Ask before creating a paid room; this click follows the visible disclosure below.
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("microphone_unavailable");
       const permission = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      permission.getTracks().forEach(track => track.stop());
+      const microphoneTrack = permission.getAudioTracks()[0];
+      if (!microphoneTrack || microphoneTrack.readyState !== "live") {
+        permission.getTracks().forEach(track => track.stop());
+        throw new Error("microphone_unavailable");
+      }
+      microphone.current = permission;
       if (cancelled.current) throw new Error("Closed");
       attempt.current ??= crypto.randomUUID();
       const connection = await start.mutateAsync({ requestId: attempt.current, conversationMode: mode });
@@ -96,7 +104,7 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       if (cancelled.current) throw new Error("Closed");
       setSessionId(createdId);
       const Daily = (await import("@daily-co/daily-js")).default;
-      const current = Daily.createCallObject({ videoSource: false });
+      const current = Daily.createCallObject({ videoSource: false, audioSource: microphoneTrack });
       call.current = current;
       current.on("track-started", event => {
         if (event?.participant?.local || event?.track.kind !== "audio") return;
@@ -108,6 +116,11 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       current.on("error", () => {
         setError("The audio connection failed. Ending the call safely.");
         void disconnect();
+      });
+      current.on("camera-error", event => {
+        if (event.error.type === "mic-in-use" || event.error.type === "permissions") {
+          setError("Your microphone could not be sent to Riverline. Check browser microphone access and start a new call.");
+        }
       });
       await current.join({ url: connection.room_url, token: connection.token, userName: "You" });
       if (cancelled.current) throw new Error("Closed");
