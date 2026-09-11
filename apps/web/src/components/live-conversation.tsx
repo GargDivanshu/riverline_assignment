@@ -19,6 +19,7 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
   const cancelled = useRef(false);
   const attempt = useRef<string | null>(null);
   const agentSpoke = useRef(false);
+  const microphonePublished = useRef(false);
   const joinTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const start = trpc.voice.start.useMutation();
   const end = trpc.voice.end.useMutation();
@@ -66,6 +67,7 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
     if (joinTimeout.current) clearTimeout(joinTimeout.current);
     joinTimeout.current = null;
     agentSpoke.current = false;
+    microphonePublished.current = false;
     if (audio.current) audio.current.srcObject = null;
     setAudioBlocked(false);
     setMuted(false);
@@ -104,10 +106,14 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       if (cancelled.current) throw new Error("Closed");
       setSessionId(createdId);
       const Daily = (await import("@daily-co/daily-js")).default;
-      const current = Daily.createCallObject({ videoSource: false, audioSource: microphoneTrack });
+      const current = Daily.createCallObject({ videoSource: false, audioSource: false });
       call.current = current;
       current.on("track-started", event => {
-        if (event?.participant?.local || event?.track.kind !== "audio") return;
+        if (event?.track.kind !== "audio") return;
+        if (event.participant?.local) {
+          microphonePublished.current = true;
+          return;
+        }
         if (audio.current) {
           audio.current.srcObject = new MediaStream([event.track]);
           void audio.current.play().catch(() => setAudioBlocked(true));
@@ -123,6 +129,8 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
         }
       });
       await current.join({ url: connection.room_url, token: connection.token, userName: "You" });
+      await current.setInputDevicesAsync({ audioSource: microphoneTrack, videoSource: false });
+      current.setLocalAudio(true);
       if (cancelled.current) throw new Error("Closed");
       setPhase("connected");
       joinTimeout.current = setTimeout(() => {
@@ -130,6 +138,10 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
         setError("Riverline could not begin this call. Ending it safely — please try again.");
         void disconnect();
       }, 15_000);
+      setTimeout(() => {
+        if (microphonePublished.current || cancelled.current) return;
+        setError("Your microphone connected but was not published to Riverline. End this call and start a new one.");
+      }, 5_000);
     } catch (failure) {
       const denied = failure instanceof DOMException && failure.name === "NotAllowedError";
       const unavailable = failure instanceof Error && failure.message === "microphone_unavailable";
