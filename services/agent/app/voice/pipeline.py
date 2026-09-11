@@ -19,13 +19,17 @@ from pipecat.transports.daily.transport import DailyParams, DailyTransport
 
 from app.config import Settings
 from app.errors import classify_voice_error, log_voice_error
+from app.voice.activity import VoiceActivityProcessor
 
 INSTRUCTIONS = """You are Riverline, a calm English-only financial conversation assistant.
 This is the live conversation milestone: financial calculation and saved plan tools are
 not connected yet. Explain that briefly once. Do not calculate totals, claim to save facts
 or generate a completed plan. You can understand the user's goal and clarify their inputs.
-Ask what brings them here today, unless they already told you. Ask one concise, relevant
-question at a time. Never conduct a fixed questionnaire. Remember facts within this call;
+On your first turn, warmly explain in one sentence that you can map what is coming in,
+what is due, and what needs attention over the next 30 days. Then invite the person to
+start wherever feels easiest: income, a payment, or something urgent. Do not open with
+"what brings you here". After that, ask one concise, relevant question at a time. Never
+conduct a fixed questionnaire. Remember facts within this call;
 do not ask again just to fill a template. Repetition is not a new income or debt.
 Let the user hesitate, restart and correct themselves. Acknowledge clear corrections;
 clarify ambiguous amounts or which debt they refer to. Never guess missing amounts/dates.
@@ -71,9 +75,10 @@ async def run_cascade(session, settings: Settings) -> None:
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
     )
+    activity = VoiceActivityProcessor(session)
     # Universal aggregation retains context and supports interruption/semantic turn handling.
     task = PipelineTask(
-        Pipeline([transport.input(), stt, user, llm, tts, transport.output(), assistant]),
+        Pipeline([transport.input(), stt, user, llm, tts, transport.output(), activity, assistant]),
         params=PipelineParams(audio_in_sample_rate=16000, audio_out_sample_rate=24000),
         enable_rtvi=False,
         idle_timeout_secs=60,
@@ -83,6 +88,7 @@ async def run_cascade(session, settings: Settings) -> None:
     @transport.event_handler("on_first_participant_joined")
     async def joined(_transport, participant):
         session.status = "active"
+        session.activity = "thinking"
         logger.info("voice_participant_joined session_id={}", session.id)
         await task.queue_frames([LLMRunFrame()])
         logger.info("voice_initial_response_queued session_id={}", session.id)

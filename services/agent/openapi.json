@@ -470,6 +470,19 @@
             "title": "Retryable",
             "default": false
           },
+          "activity": {
+            "type": "string",
+            "enum": [
+              "connecting",
+              "thinking",
+              "speaking",
+              "listening",
+              "ended",
+              "failed"
+            ],
+            "title": "Activity",
+            "default": "connecting"
+          },
           "room_url": {
             "type": "string",
             "title": "Room Url"
@@ -535,6 +548,19 @@
             "type": "boolean",
             "title": "Retryable",
             "default": false
+          },
+          "activity": {
+            "type": "string",
+            "enum": [
+              "connecting",
+              "thinking",
+              "speaking",
+              "listening",
+              "ended",
+              "failed"
+            ],
+            "title": "Activity",
+            "default": "connecting"
           }
         },
         "type": "object",

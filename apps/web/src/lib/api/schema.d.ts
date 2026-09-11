@@ -154,6 +154,12 @@ export interface components {
              * @default false
              */
             retryable: boolean;
+            /**
+             * Activity
+             * @default connecting
+             * @enum {string}
+             */
+            activity: "connecting" | "thinking" | "speaking" | "listening" | "ended" | "failed";
             /** Room Url */
             room_url: string;
             /** Token */
@@ -179,6 +185,12 @@ export interface components {
              * @default false
              */
             retryable: boolean;
+            /**
+             * Activity
+             * @default connecting
+             * @enum {string}
+             */
+            activity: "connecting" | "thinking" | "speaking" | "listening" | "ended" | "failed";
         };
         /** Workspace */
         Workspace: {

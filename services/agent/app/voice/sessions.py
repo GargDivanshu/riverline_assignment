@@ -33,6 +33,7 @@ class VoiceState(BaseModel):
     error: str | None = None
     error_code: str | None = None
     retryable: bool = False
+    activity: Literal["connecting", "thinking", "speaking", "listening", "ended", "failed"] = "connecting"
 
 
 class VoiceConnection(VoiceState):
@@ -54,6 +55,7 @@ class Session:
     error: str | None = None
     error_code: str | None = None
     retryable: bool = False
+    activity: str = "connecting"
     pipeline: Any = field(default=None, repr=False)
     worker: asyncio.Task | None = field(default=None, repr=False)
     created_monotonic: float = field(default_factory=time.monotonic, repr=False)
@@ -65,6 +67,7 @@ class Session:
             error=self.error,
             error_code=self.error_code,
             retryable=self.retryable,
+            activity=self.activity,
         )
 
     def fail(self, public: PublicError) -> None:
@@ -72,6 +75,7 @@ class Session:
         self.error = public.message
         self.error_code = public.code
         self.retryable = public.retryable
+        self.activity = "failed"
 
     def connection(self) -> VoiceConnection:
         return VoiceConnection(
@@ -187,6 +191,7 @@ class VoiceSessions:
         finally:
             if session.status != "failed":
                 session.status = "ended"
+                session.activity = "ended"
             await self.delete_room(session.room_name)
             logger.info(
                 "voice_pipeline_finished session_id={} status={} elapsed_ms={}",

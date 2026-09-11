@@ -11,13 +11,13 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [muted, setMuted] = useState(false);
-  const [botPresent, setBotPresent] = useState(false);
+  const [audioBlocked, setAudioBlocked] = useState(false);
   const call = useRef<DailyCall | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const busy = useRef(false);
   const cancelled = useRef(false);
   const attempt = useRef<string | null>(null);
-  const remoteAudioStarted = useRef(false);
+  const agentSpoke = useRef(false);
   const joinTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const start = trpc.voice.start.useMutation();
   const end = trpc.voice.end.useMutation();
@@ -38,6 +38,12 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
   useEffect(() => onActiveChange(phase !== "idle"), [onActiveChange, phase]);
 
   useEffect(() => {
+    if (state.data?.activity !== "speaking") return;
+    agentSpoke.current = true;
+    if (joinTimeout.current) clearTimeout(joinTimeout.current);
+  }, [state.data?.activity]);
+
+  useEffect(() => {
     if (state.data?.status === "failed" || state.data?.status === "ended") {
       void release().finally(() => {
         if (state.data?.error) setError(state.data.error);
@@ -56,9 +62,9 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
     if (current) await current.destroy();
     if (joinTimeout.current) clearTimeout(joinTimeout.current);
     joinTimeout.current = null;
-    remoteAudioStarted.current = false;
+    agentSpoke.current = false;
     if (audio.current) audio.current.srcObject = null;
-    setBotPresent(false);
+    setAudioBlocked(false);
     setMuted(false);
   }
 
@@ -94,25 +100,20 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
       call.current = current;
       current.on("track-started", event => {
         if (event?.participant?.local || event?.track.kind !== "audio") return;
-        remoteAudioStarted.current = true;
-        if (joinTimeout.current) clearTimeout(joinTimeout.current);
-        setBotPresent(true);
         if (audio.current) {
           audio.current.srcObject = new MediaStream([event.track]);
-          void audio.current.play().catch(() => setError("Press Play audio to hear the agent."));
+          void audio.current.play().catch(() => setAudioBlocked(true));
         }
       });
-      current.on("participant-left", () => setBotPresent(false));
       current.on("error", () => {
         setError("The audio connection failed. Ending the call safely.");
         void disconnect();
       });
-      current.on("left-meeting", () => setBotPresent(false));
       await current.join({ url: connection.room_url, token: connection.token, userName: "You" });
       if (cancelled.current) throw new Error("Closed");
       setPhase("connected");
       joinTimeout.current = setTimeout(() => {
-        if (remoteAudioStarted.current) return;
+        if (agentSpoke.current) return;
         setError("Riverline could not begin this call. Ending it safely — please try again.");
         void disconnect();
       }, 15_000);
@@ -131,13 +132,14 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
   }
 
   const stopped = state.data?.status === "failed" || state.data?.status === "ended";
-  const status = phase === "idle" ? "Ready when you are" : phase === "starting" ? "Setting up a private call" : phase === "ending" ? "Ending your conversation" : botPresent ? "Riverline is speaking" : "Riverline is getting ready";
+  const activity = state.data?.activity;
+  const status = phase === "idle" ? "Ready when you are" : phase === "starting" ? "Setting up a private call" : phase === "ending" ? "Ending your conversation" : activity === "speaking" ? "Riverline is speaking" : activity === "listening" ? "Your turn — Riverline is listening" : "Riverline is getting ready";
   return <div className="live-conversation">
-    <div className={`voice-stage phase-${phase} ${botPresent ? "is-speaking" : ""}`}>
+    <div className={`voice-stage phase-${phase} ${activity === "speaking" ? "is-speaking" : ""}`}>
       <div className="voice-pulse" aria-hidden="true"><div><Sparkles size={24} /></div></div>
       <div className="voice-stage-copy">
-        <span className="voice-status"><span className="voice-status-icon">{phase === "starting" || phase === "ending" ? <LoaderCircle size={15} className="animate-spin" /> : botPresent ? <Volume2 size={15} /> : <AudioLines size={15} />}</span>{status}</span>
-        <p>{phase === "connected" && !botPresent ? "This should take only a few seconds." : botPresent ? "You can speak naturally and interrupt whenever you need." : "Your audio stays live only for this call."}</p>
+        <span className="voice-status"><span className="voice-status-icon">{phase === "starting" || phase === "ending" ? <LoaderCircle size={15} className="animate-spin" /> : activity === "speaking" ? <Volume2 size={15} /> : <AudioLines size={15} />}</span>{status}</span>
+        <p>{phase === "connected" && activity !== "speaking" && activity !== "listening" ? "This should take only a few seconds." : activity === "speaking" ? "You can interrupt whenever you need." : activity === "listening" ? "Speak naturally; pauses and corrections are okay." : "Your audio stays live only for this call."}</p>
       </div>
     </div>
     {(error || state.data?.error || state.error) && <p className="voice-error" role="alert">{error || state.data?.error || "Connection status unavailable. End the call and try again."}{state.data?.error_code && <small> Reference: {state.data.error_code}</small>}</p>}
@@ -149,6 +151,7 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
         }}>{muted ? <MicOff size={16} /> : <Mic size={16} />}{muted ? "Unmute" : "Mute"}</Button>
         <Button variant="destructive" disabled={phase !== "connected"} onClick={disconnect}><PhoneOff size={16} />End conversation</Button>
       </>}
+      {audioBlocked && <Button variant="outline" onClick={() => void audio.current?.play().then(() => setAudioBlocked(false)).catch(() => undefined)}><Volume2 size={16} />Enable agent audio</Button>}
     </div>
     <p className="voice-disclosure">English voice is processed by Daily, ElevenLabs and OpenRouter. Recordings are not saved; context ends with this call.</p>
   </div>;
