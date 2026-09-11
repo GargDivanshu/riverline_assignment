@@ -1,5 +1,6 @@
 """One live cascade. No recorded-message STT and no model-owned money arithmetic."""
 
+from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -56,7 +57,6 @@ async def run_cascade(session, settings: Settings) -> None:
         settings=OpenRouterLLMService.Settings(
             model=settings.llm_model,
             max_completion_tokens=800,
-            extra={"reasoning": {"effort": "low"}},
         ),
     )
     tts = ElevenLabsTTSService(
@@ -83,10 +83,13 @@ async def run_cascade(session, settings: Settings) -> None:
     @transport.event_handler("on_first_participant_joined")
     async def joined(_transport, participant):
         session.status = "active"
+        logger.info("voice_participant_joined session_id={}", session.id)
         await task.queue_frames([LLMRunFrame()])
+        logger.info("voice_initial_response_queued session_id={}", session.id)
 
     @transport.event_handler("on_participant_left")
     async def left(_transport, participant, reason):
+        logger.info("voice_participant_left session_id={}", session.id)
         await task.cancel()
 
     @task.event_handler("on_pipeline_error")
@@ -95,7 +98,7 @@ async def run_cascade(session, settings: Settings) -> None:
         public = classify_voice_error(
             getattr(frame, "exception", None), source=source, description=getattr(frame, "error", None)
         )
-        log_voice_error(public, getattr(frame, "exception", None))
+        log_voice_error(public, getattr(frame, "exception", None), session_id=session.id)
         session.fail(public)
         await task.cancel()
 

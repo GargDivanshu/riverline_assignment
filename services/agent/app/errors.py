@@ -112,10 +112,13 @@ def classify_voice_error(
     return PublicError(f"voice_{provider}_{suffix}", message, http_status, retryable)
 
 
-def log_voice_error(public: PublicError, error: BaseException | None = None) -> None:
+def log_voice_error(
+    public: PublicError, error: BaseException | None = None, *, session_id: str | None = None
+) -> None:
     """Keep diagnostics useful without writing audio, transcripts, keys or provider bodies."""
     logger.warning(
-        "voice_failure code={} retryable={} exception_type={}",
+        "voice_failure session_id={} code={} retryable={} exception_type={}",
+        session_id or "none",
         public.code,
         public.retryable,
         type(error).__name__ if error else "none",

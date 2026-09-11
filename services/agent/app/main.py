@@ -45,11 +45,14 @@ def _public_detail(detail: object, status_code: int) -> dict[str, str | bool]:
 
 @app.exception_handler(HTTPException)
 async def http_error_handler(_: Request, error: HTTPException) -> JSONResponse:
-    return JSONResponse(status_code=error.status_code, content={"error": _public_detail(error.detail, error.status_code)})
+    detail = _public_detail(error.detail, error.status_code)
+    logger.warning("api_error path={} status={} code={}", _.url.path, error.status_code, detail["code"])
+    return JSONResponse(status_code=error.status_code, content={"error": detail})
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(_: Request, __: RequestValidationError) -> JSONResponse:
+    logger.warning("api_error path={} status=422 code=invalid_request", _.url.path)
     return JSONResponse(status_code=422, content={"error": VOICE_INVALID_REQUEST.detail()})
 
 

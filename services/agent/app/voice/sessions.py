@@ -7,6 +7,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 import httpx
+from loguru import logger
 from pydantic import BaseModel
 
 from app.config import Settings
@@ -55,6 +56,7 @@ class Session:
     retryable: bool = False
     pipeline: Any = field(default=None, repr=False)
     worker: asyncio.Task | None = field(default=None, repr=False)
+    created_monotonic: float = field(default_factory=time.monotonic, repr=False)
 
     def state(self) -> VoiceState:
         return VoiceState(
@@ -110,6 +112,7 @@ class VoiceSessions:
             if len(active) >= self.settings.voice_max_sessions:
                 raise VOICE_CAPACITY.as_http_exception()
             now = int(time.time())
+            started = time.monotonic()
             self.sessions = {k: s for k, s in self.sessions.items() if s.expires_at > now}
             expires = now + self.settings.voice_max_seconds
             room_name = "riverline-" + sid
@@ -152,9 +155,12 @@ class VoiceSessions:
                 public = classify_voice_error(error, source="daily")
                 log_voice_error(public, error)
                 raise public.as_http_exception() from None
-            session = Session(sid, owner, room_url, room_name, tokens[0], tokens[1], expires)
+            session = Session(
+                sid, owner, room_url, room_name, tokens[0], tokens[1], expires, created_monotonic=started
+            )
             self.sessions[sid] = session
             session.worker = asyncio.create_task(self.run(session))
+            logger.info("voice_session_created session_id={} room_setup_ms={}", sid, int((time.monotonic() - session.created_monotonic) * 1000))
             return session.connection()
 
     def get(self, owner: str, sid: str) -> Session:
@@ -164,6 +170,7 @@ class VoiceSessions:
         return session
 
     async def run(self, session: Session):
+        logger.info("voice_pipeline_starting session_id={}", session.id)
         try:
             if self.run_pipeline is None:
                 from app.voice.pipeline import run_cascade
@@ -175,12 +182,18 @@ class VoiceSessions:
             pass
         except Exception as error:  # noqa: BLE001 - isolate provider failures without logging secrets/audio
             public = classify_voice_error(error)
-            log_voice_error(public, error)
+            log_voice_error(public, error, session_id=session.id)
             session.fail(public)
         finally:
             if session.status != "failed":
                 session.status = "ended"
             await self.delete_room(session.room_name)
+            logger.info(
+                "voice_pipeline_finished session_id={} status={} elapsed_ms={}",
+                session.id,
+                session.status,
+                int((time.monotonic() - session.created_monotonic) * 1000),
+            )
 
     async def delete_room(self, room_name: str):
         # Daily expiry remains the backstop if cleanup cannot reach the provider.
@@ -192,6 +205,7 @@ class VoiceSessions:
 
     async def end(self, owner: str, sid: str) -> VoiceState:
         session = self.get(owner, sid)
+        logger.info("voice_session_end_requested session_id={}", sid)
         if session.worker and not session.worker.done():
             if session.pipeline:
                 await session.pipeline.cancel()

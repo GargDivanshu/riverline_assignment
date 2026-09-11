@@ -29,4 +29,4 @@ The agent normalizes external failures before they cross the Python API boundary
 
 The Next.js tRPC boundary maps that envelope to typed client errors. Browser microphone failures and Daily client events have their own safe messages and always release the local audio object. Failed or ended backend sessions also release the UI so that the user can start again.
 
-Server logs retain only the normalized error code, retryability and exception class. They deliberately omit upstream response bodies and conversation content.
+Server logs retain only the normalized error code, retryability, exception class, session ID and lifecycle stage. HTTP errors also emit their path, status and stable code. Uvicorn access logs are disabled in Compose because health probes would otherwise obscure these events. Logs deliberately omit upstream response bodies and conversation content.
