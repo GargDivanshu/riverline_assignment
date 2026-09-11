@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -25,6 +24,9 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
+from pipecat.turns.user_start import TranscriptionUserTurnStartStrategy
+from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pydantic import ValidationError
 
 from app.config import Settings
@@ -296,7 +298,14 @@ async def run_cascade(session, settings: Settings) -> None:
     user, assistant = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(), user_turn_stop_timeout=1.25
+            # ElevenLabs emits final transcript segments reliably in this room,
+            # while browser/VAD stop events can remain open on a noisy mic. Make
+            # those final segments the source of truth for a complete turn.
+            user_turn_strategies=UserTurnStrategies(
+                start=[TranscriptionUserTurnStartStrategy(use_interim=False)],
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.75)],
+            ),
+            user_turn_stop_timeout=1.25,
         ),
     )
     transcript = TranscriptProcessor()
