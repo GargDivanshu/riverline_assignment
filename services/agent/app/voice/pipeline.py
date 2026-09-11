@@ -167,18 +167,21 @@ async def _get_snapshot(params: FunctionCallParams, session) -> None:
 
 
 async def run_cascade(session, settings: Settings) -> None:
+    logger.info("voice_pipeline_stage session_id={} stage=creating_transport", session.id)
     transport = DailyTransport(
         session.room_url,
         session.bot_token,
         "Riverline",
         DailyParams(audio_in_enabled=True, audio_out_enabled=True, video_out_enabled=False),
     )
+    logger.info("voice_pipeline_stage session_id={} stage=creating_stt", session.id)
     stt = ElevenLabsRealtimeSTTService(
         api_key=settings.elevenlabs_api_key,
         settings=ElevenLabsRealtimeSTTService.Settings(
             model=settings.stt_model, language=Language.EN
         ),
     )
+    logger.info("voice_pipeline_stage session_id={} stage=creating_llm", session.id)
     llm = OpenRouterLLMService(
         api_key=settings.openrouter_api_key,
         settings=OpenRouterLLMService.Settings(
@@ -192,6 +195,7 @@ async def run_cascade(session, settings: Settings) -> None:
     llm.register_function(
         "get_financial_snapshot", lambda params: _get_snapshot(params, session), timeout_secs=8
     )
+    logger.info("voice_pipeline_stage session_id={} stage=creating_tts", session.id)
     tts = ElevenLabsTTSService(
         api_key=settings.elevenlabs_api_key,
         settings=ElevenLabsTTSService.Settings(
@@ -199,6 +203,7 @@ async def run_cascade(session, settings: Settings) -> None:
             model=settings.tts_model,
         ),
     )
+    logger.info("voice_pipeline_stage session_id={} stage=creating_task", session.id)
     context = LLMContext(
         [
             {
@@ -221,6 +226,25 @@ async def run_cascade(session, settings: Settings) -> None:
         idle_timeout_secs=60,
     )
     session.pipeline = task
+    logger.info("voice_pipeline_stage session_id={} stage=running", session.id)
+
+    @transport.event_handler("on_joined")
+    async def transport_joined(_transport, _data):
+        logger.info("voice_bot_joined session_id={}", session.id)
+
+    @transport.event_handler("on_error")
+    async def transport_error(_transport, error):
+        # The Daily message can contain transport internals; log only its safe classification.
+        public = classify_voice_error(source="daily", description=error)
+        log_voice_error(public, session_id=session.id)
+        session.fail(public)
+        await task.cancel()
+
+    @transport.event_handler("on_transcription_error")
+    async def transcription_error(_transport, error):
+        # The room remains usable for output, but the event is visible in the same session trace.
+        public = classify_voice_error(source="elevenlabs", description=error)
+        log_voice_error(public, session_id=session.id)
 
     @transport.event_handler("on_first_participant_joined")
     async def joined(_transport, participant):
