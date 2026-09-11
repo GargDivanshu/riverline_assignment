@@ -24,15 +24,14 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
-from pipecat.turns.user_start import TranscriptionUserTurnStartStrategy
-from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 from pydantic import ValidationError
 
 from app.config import Settings
 from app.errors import classify_voice_error, log_voice_error
 from app.finance import FinancialFactInput
 from app.voice.activity import VoiceActivityProcessor
+from app.voice.transcript_turn_gate import TranscriptTurnGate
 
 INSTRUCTIONS = """You are Riverline, a calm English-only financial conversation assistant.
 You keep a 30-day money view in the workspace while speaking. The record_financial_fact
@@ -298,17 +297,11 @@ async def run_cascade(session, settings: Settings) -> None:
     user, assistant = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            # ElevenLabs emits final transcript segments reliably in this room,
-            # while browser/VAD stop events can remain open on a noisy mic. Make
-            # those final segments the source of truth for a complete turn.
-            user_turn_strategies=UserTurnStrategies(
-                start=[TranscriptionUserTurnStartStrategy(use_interim=False)],
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.75)],
-            ),
-            user_turn_stop_timeout=1.25,
+            user_turn_strategies=ExternalUserTurnStrategies(),
         ),
     )
     transcript = TranscriptProcessor()
+    turn_gate = TranscriptTurnGate()
 
     @transcript.event_handler("on_transcript_update")
     async def transcript_update(_processor, frame):
@@ -326,6 +319,7 @@ async def run_cascade(session, settings: Settings) -> None:
                 transport.input(),
                 stt,
                 transcript.user(),
+                turn_gate,
                 user,
                 llm,
                 tts,
