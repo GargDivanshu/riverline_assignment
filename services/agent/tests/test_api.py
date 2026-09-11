@@ -15,8 +15,10 @@ headers = {
 
 
 def test_workspace_rejects_missing_or_wrong_service_credentials():
-    assert client.get("/v1/workspace").status_code == 401
-    assert client.get("/v1/workspace", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    missing = client.get("/v1/workspace")
+    wrong = client.get("/v1/workspace", headers={"Authorization": "Bearer wrong"})
+    assert missing.status_code == wrong.status_code == 401
+    assert missing.json()["error"]["code"] == "service_unauthorized"
 
 
 def test_workspace_requires_authenticated_user_context():
@@ -47,10 +49,8 @@ def test_voice_requires_configuration_and_valid_request():
             json={"request_id": "7f974566-a1be-4c66-b451-53844c42d98e"},
         )
         assert response.status_code == 503
-        assert (
-            live_client.post(
-                "/v1/voice/start", headers=headers, json={"request_id": "bad"}
-            ).status_code
-            == 422
-        )
+        assert response.json()["error"]["code"] == "voice_not_configured"
+        invalid = live_client.post("/v1/voice/start", headers=headers, json={"request_id": "bad"})
+        assert invalid.status_code == 422
+        assert invalid.json()["error"]["code"] == "invalid_request"
     assert client.post("/v1/voice/start").status_code == 401

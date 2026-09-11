@@ -7,7 +7,7 @@ Scope: authentication, empty workspace scaffold and the first live voice slice, 
 | Next.js production build | Passed | Compilation and generated routes |
 | TypeScript and ESLint | Passed | Web source |
 | Node tests | 2 passed | Authentication input validation |
-| Python pytest | 8 passed | Internal authentication plus voice-session idempotency, ownership, capacity, cleanup and provider-failure handling |
+| Python pytest | 9 passed | Internal authentication plus voice-session idempotency, ownership, capacity, cleanup and normalized provider-error handling |
 | Ruff | Passed | Python source |
 | Playwright using Chrome | 3 passed | Protected page/API rejection; signup, workspace/backend, dialogs, signout, wrong password, login; mobile overflow and reduced-motion layout |
 | Desktop/mobile screenshots | Reviewed | Login and workspace; mobile brand selector and secondary-text contrast corrected |

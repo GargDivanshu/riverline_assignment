@@ -78,6 +78,8 @@ For Google, create a Web application OAuth client in Google Cloud, configure its
 
 The selected cascade uses Daily, ElevenLabs and OpenRouter. The browser asks for microphone permission only after you press **Start live conversation**. The app does not retain audio recordings. The agent is English-only, does not calculate or save financial facts in this milestone, and describes those limits during the call. Sarvam and direct OpenAI Realtime remain alternatives rather than fallbacks.
 
+Voice failures use a shared safe error contract across Daily, ElevenLabs, OpenRouter, Pipecat and the tRPC boundary. Users receive a retryable message and reference code; provider response bodies, keys and conversation content never reach the browser or application logs. See [voice error handling](docs/error-handling.md).
+
 ## Verification
 
 ```sh

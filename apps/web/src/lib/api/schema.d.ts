@@ -147,6 +147,13 @@ export interface components {
             status: "starting" | "active" | "ended" | "failed";
             /** Error */
             error?: string | null;
+            /** Error Code */
+            error_code?: string | null;
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
             /** Room Url */
             room_url: string;
             /** Token */
@@ -165,6 +172,13 @@ export interface components {
             status: "starting" | "active" | "ended" | "failed";
             /** Error */
             error?: string | null;
+            /** Error Code */
+            error_code?: string | null;
+            /**
+             * Retryable
+             * @default false
+             */
+            retryable: boolean;
         };
         /** Workspace */
         Workspace: {

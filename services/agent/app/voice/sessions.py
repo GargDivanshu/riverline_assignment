@@ -7,10 +7,19 @@ from typing import Any, Literal
 from uuid import UUID
 
 import httpx
-from fastapi import HTTPException
 from pydantic import BaseModel
 
 from app.config import Settings
+from app.errors import (
+    VOICE_ALREADY_ACTIVE,
+    VOICE_CAPACITY,
+    VOICE_ENDED,
+    VOICE_NOT_CONFIGURED,
+    VOICE_SESSION_NOT_FOUND,
+    PublicError,
+    classify_voice_error,
+    log_voice_error,
+)
 
 
 class StartVoice(BaseModel):
@@ -21,6 +30,8 @@ class VoiceState(BaseModel):
     session_id: str
     status: Literal["starting", "active", "ended", "failed"]
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool = False
 
 
 class VoiceConnection(VoiceState):
@@ -40,11 +51,25 @@ class Session:
     expires_at: int
     status: str = "starting"
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool = False
     pipeline: Any = field(default=None, repr=False)
     worker: asyncio.Task | None = field(default=None, repr=False)
 
     def state(self) -> VoiceState:
-        return VoiceState(session_id=self.id, status=self.status, error=self.error)
+        return VoiceState(
+            session_id=self.id,
+            status=self.status,
+            error=self.error,
+            error_code=self.error_code,
+            retryable=self.retryable,
+        )
+
+    def fail(self, public: PublicError) -> None:
+        self.status = "failed"
+        self.error = public.message
+        self.error_code = public.code
+        self.retryable = public.retryable
 
     def connection(self) -> VoiceConnection:
         return VoiceConnection(
@@ -69,21 +94,21 @@ class VoiceSessions:
 
     async def start(self, owner: str, request_id: UUID) -> VoiceConnection:
         if not self.settings.voice_ready:
-            raise HTTPException(503, "Voice providers are not configured.")
+            raise VOICE_NOT_CONFIGURED.as_http_exception()
         async with self.lock:
             sid = str(request_id)
             existing = self.sessions.get(sid)
             if existing:
                 if existing.owner != owner:
-                    raise HTTPException(404, "Session not found.")
+                    raise VOICE_SESSION_NOT_FOUND.as_http_exception()
                 if existing.status in ("starting", "active"):
                     return existing.connection()
-                raise HTTPException(409, "This call has ended. Start a new conversation.")
+                raise VOICE_ENDED.as_http_exception()
             active = [s for s in self.sessions.values() if s.status in ("starting", "active")]
             if any(s.owner == owner for s in active):
-                raise HTTPException(409, "You already have an active conversation.")
+                raise VOICE_ALREADY_ACTIVE.as_http_exception()
             if len(active) >= self.settings.voice_max_sessions:
-                raise HTTPException(429, "All voice sessions are busy. Try again shortly.")
+                raise VOICE_CAPACITY.as_http_exception()
             now = int(time.time())
             self.sessions = {k: s for k, s in self.sessions.items() if s.expires_at > now}
             expires = now + self.settings.voice_max_seconds
@@ -122,11 +147,11 @@ class VoiceSessions:
                     )
                     token_response.raise_for_status()
                     tokens.append(token_response.json()["token"])
-            except (httpx.HTTPError, ValueError, KeyError):
+            except (httpx.HTTPError, ValueError, KeyError) as error:
                 await self.delete_room(room_name)
-                raise HTTPException(
-                    502, "Could not create the voice connection. Try again."
-                ) from None
+                public = classify_voice_error(error, source="daily")
+                log_voice_error(public, error)
+                raise public.as_http_exception() from None
             session = Session(sid, owner, room_url, room_name, tokens[0], tokens[1], expires)
             self.sessions[sid] = session
             session.worker = asyncio.create_task(self.run(session))
@@ -135,7 +160,7 @@ class VoiceSessions:
     def get(self, owner: str, sid: str) -> Session:
         session = self.sessions.get(sid)
         if not session or session.owner != owner:
-            raise HTTPException(404, "Session not found.")
+            raise VOICE_SESSION_NOT_FOUND.as_http_exception()
         return session
 
     async def run(self, session: Session):
@@ -148,9 +173,10 @@ class VoiceSessions:
                 await self.run_pipeline(session, self.settings)
         except asyncio.CancelledError:
             pass
-        except Exception:  # noqa: BLE001 - isolate provider failures without logging secrets/audio
-            session.status = "failed"
-            session.error = "The voice connection stopped. Please start a new call."
+        except Exception as error:  # noqa: BLE001 - isolate provider failures without logging secrets/audio
+            public = classify_voice_error(error)
+            log_voice_error(public, error)
+            session.fail(public)
         finally:
             if session.status != "failed":
                 session.status = "ended"
@@ -160,8 +186,9 @@ class VoiceSessions:
         # Daily expiry remains the backstop if cleanup cannot reach the provider.
         try:
             await self.client.delete("rooms/" + room_name)
-        except httpx.HTTPError:
-            pass
+        except httpx.HTTPError as error:
+            public = classify_voice_error(error, source="daily")
+            log_voice_error(public, error)
 
     async def end(self, owner: str, sid: str) -> VoiceState:
         session = self.get(owner, sid)

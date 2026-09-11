@@ -33,8 +33,15 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
 
   useEffect(() => {
     if (state.data?.status === "failed" || state.data?.status === "ended") {
-      void call.current?.leave();
+      void release().finally(() => {
+        if (state.data?.error) setError(state.data.error);
+        setSessionId(null);
+        setPhase("idle");
+        attempt.current = null;
+      });
     }
+  // release is a function declaration so it is stable for this lifecycle effect.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.data?.status]);
 
   async function release() {
@@ -64,6 +71,7 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
     let createdId: string | null = null;
     try {
       // Ask before creating a paid room; this click follows the visible disclosure below.
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("microphone_unavailable");
       const permission = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       permission.getTracks().forEach(track => track.stop());
       if (cancelled.current) throw new Error("Closed");
@@ -84,14 +92,19 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
         }
       });
       current.on("participant-left", () => setBotPresent(false));
-      current.on("error", () => setError("The audio connection failed. End the call and try again."));
+      current.on("error", () => {
+        setError("The audio connection failed. Ending the call safely.");
+        void disconnect();
+      });
       current.on("left-meeting", () => setBotPresent(false));
       await current.join({ url: connection.room_url, token: connection.token, userName: "You" });
       if (cancelled.current) throw new Error("Closed");
       setPhase("connected");
     } catch (failure) {
       const denied = failure instanceof DOMException && failure.name === "NotAllowedError";
-      setError(denied ? "Microphone permission was denied. Allow microphone access and try again." : "Could not connect. Check your microphone and provider configuration, then retry.");
+      const unavailable = failure instanceof Error && failure.message === "microphone_unavailable";
+      const providerMessage = safeMutationMessage(failure);
+      setError(denied ? "Microphone permission was denied. Allow microphone access and try again." : unavailable ? "Microphone access is unavailable in this browser." : providerMessage ?? "Could not connect. Check your microphone and provider configuration, then retry.");
       await release();
       if (createdId) {
         await end.mutateAsync({ sessionId: createdId }).catch(() => undefined);
@@ -108,7 +121,7 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
     <div role="status" aria-live="polite">
       {phase === "idle" ? "Ready when you are." : phase === "starting" ? "Connecting your microphone and agent…" : phase === "ending" ? "Ending conversation…" : stopped ? "Conversation stopped." : botPresent ? "Connected — speak naturally, and interrupt whenever needed." : "Connected — waiting for the agent…"}
     </div>
-    {(error || state.data?.error || state.error) && <p role="alert">{error || state.data?.error || "Connection status unavailable. End the call and try again."}</p>}
+    {(error || state.data?.error || state.error) && <p role="alert">{error || state.data?.error || "Connection status unavailable. End the call and try again."}{state.data?.error_code && <small> Reference: {state.data.error_code}</small>}</p>}
     <audio ref={audio} autoPlay controls aria-label="Agent audio" />
     <div className="flex flex-wrap gap-3">
       {phase === "idle" ? <Button onClick={connect}><Mic size={16} />Start live conversation</Button> : <>
@@ -119,4 +132,11 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
       </>}
     </div>
   </div>;
+}
+
+function safeMutationMessage(failure: unknown): string | undefined {
+  if (!failure || typeof failure !== "object") return undefined;
+  const candidate = failure as { data?: unknown; message?: unknown };
+  if (!candidate.data || typeof candidate.data !== "object" || typeof candidate.message !== "string") return undefined;
+  return candidate.message.length <= 180 ? candidate.message : undefined;
 }

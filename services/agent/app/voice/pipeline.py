@@ -17,6 +17,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
 
 from app.config import Settings
+from app.errors import classify_voice_error, log_voice_error
 
 INSTRUCTIONS = """You are Riverline, a calm English-only financial conversation assistant.
 This is the live conversation milestone: financial calculation and saved plan tools are
@@ -90,8 +91,12 @@ async def run_cascade(session, settings: Settings) -> None:
 
     @task.event_handler("on_pipeline_error")
     async def failed(_task, frame):
-        session.status = "failed"
-        session.error = "A voice provider failed. End this call and try again."
+        source = getattr(getattr(frame, "processor", None), "name", None)
+        public = classify_voice_error(
+            getattr(frame, "exception", None), source=source, description=getattr(frame, "error", None)
+        )
+        log_voice_error(public, getattr(frame, "exception", None))
+        session.fail(public)
         await task.cancel()
 
     await PipelineRunner(handle_sigint=False).run(task)

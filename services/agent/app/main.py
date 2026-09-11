@@ -5,9 +5,17 @@ from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from app.config import get_settings
+from app.errors import (
+    SERVICE_UNAUTHORIZED,
+    USER_CONTEXT_REQUIRED,
+    VOICE_INVALID_REQUEST,
+    PublicError,
+)
 from app.models import Workspace
 from app.voice.sessions import StartVoice, VoiceConnection, VoiceSessions, VoiceState
 
@@ -25,15 +33,43 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Riverline Agent API", version="0.1.0", lifespan=lifespan)
 
 
+def _public_detail(detail: object, status_code: int) -> dict[str, str | bool]:
+    if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+        return detail
+    if status_code == 401:
+        return SERVICE_UNAUTHORIZED.detail()
+    if status_code == 400:
+        return USER_CONTEXT_REQUIRED.detail()
+    return PublicError("request_failed", "The request could not be completed.", status_code).detail()
+
+
+@app.exception_handler(HTTPException)
+async def http_error_handler(_: Request, error: HTTPException) -> JSONResponse:
+    return JSONResponse(status_code=error.status_code, content={"error": _public_detail(error.detail, error.status_code)})
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_: Request, __: RequestValidationError) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"error": VOICE_INVALID_REQUEST.detail()})
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(_: Request, error: Exception) -> JSONResponse:
+    # Never return exception text: provider responses may contain credentials or conversation content.
+    logger.error("agent_unexpected_error exception_type={}", type(error).__name__)
+    public = PublicError("internal_error", "The service could not complete that request.", 500, True)
+    return JSONResponse(status_code=500, content={"error": public.detail()})
+
+
 def require_service(
     authorization: Annotated[str | None, Header()] = None,
     x_user_id: Annotated[str | None, Header()] = None,
 ) -> str:
     expected = f"Bearer {get_settings().internal_api_secret}"
     if not authorization or not compare_digest(authorization, expected):
-        raise HTTPException(status_code=401, detail="Unauthorized service")
+        raise SERVICE_UNAUTHORIZED.as_http_exception()
     if not x_user_id or not 1 <= len(x_user_id) <= 128:
-        raise HTTPException(status_code=400, detail="Authenticated user context required")
+        raise USER_CONTEXT_REQUIRED.as_http_exception()
     return x_user_id
 
 

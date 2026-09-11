@@ -6,6 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config import Settings
+from app.errors import classify_voice_error
 from app.voice.sessions import VoiceSessions
 
 
@@ -84,7 +85,8 @@ def test_partial_room_setup_failure_deletes_room_and_returns_no_token():
         manager, calls = make_manager(fail_tokens=True)
         with pytest.raises(HTTPException) as error:
             await manager.start("a", uuid4())
-        assert error.value.status_code == 502
+        assert error.value.status_code == 503
+        assert error.value.detail["code"] == "voice_daily_unavailable"
         assert not manager.sessions
         assert calls[-1][0] == "DELETE"
         await manager.close()
@@ -103,7 +105,23 @@ def test_pipeline_failure_is_visible_and_does_not_leak_provider_error():
         await session.worker
         assert session.status == "failed"
         assert "provider-private" not in session.error
+        assert session.error_code == "voice_unknown_failed"
         assert calls[-1][0] == "DELETE"
         await manager.close()
 
     asyncio.run(scenario())
+
+
+def test_provider_errors_have_stable_public_codes_without_provider_bodies():
+    denied = httpx.HTTPStatusError(
+        "do-not-expose-this-body", request=httpx.Request("POST", "https://api.daily.co"),
+        response=httpx.Response(401),
+    )
+    busy = httpx.HTTPStatusError(
+        "do-not-expose-this-body", request=httpx.Request("POST", "https://api.openrouter.ai"),
+        response=httpx.Response(429),
+    )
+    timeout = httpx.ReadTimeout("do-not-expose-this-body")
+    assert classify_voice_error(denied, source="daily").code == "voice_daily_authentication_failed"
+    assert classify_voice_error(busy, source="OpenRouterLLMService").code == "voice_openrouter_rate_limited"
+    assert classify_voice_error(timeout, source="ElevenLabsTTSService").code == "voice_elevenlabs_timeout"
