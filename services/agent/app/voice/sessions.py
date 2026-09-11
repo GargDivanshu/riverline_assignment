@@ -63,6 +63,9 @@ class Session:
     pipeline: Any = field(default=None, repr=False)
     worker: asyncio.Task | None = field(default=None, repr=False)
     created_monotonic: float = field(default_factory=time.monotonic, repr=False)
+    user_transcript_received: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    opening_playback_finished: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    opening_is_playing: bool = field(default=False, repr=False)
 
     def state(self) -> VoiceState:
         return VoiceState(

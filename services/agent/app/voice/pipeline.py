@@ -1,5 +1,6 @@
 """One live cascade with constrained tools for persisted financial facts."""
 
+import asyncio
 import time
 from datetime import datetime
 from uuid import uuid4
@@ -157,6 +158,25 @@ async def _trace(
         )
 
 
+async def _warn_if_no_input(session, task: PipelineTask) -> None:
+    """Make microphone delivery failure audible rather than leaving a silent call."""
+    await session.opening_playback_finished.wait()
+    try:
+        await asyncio.wait_for(session.user_transcript_received.wait(), timeout=5)
+        return
+    except TimeoutError:
+        logger.warning("voice_no_user_audio_after_opening session_id={}", session.id)
+        await _trace(session, "no_user_audio_after_opening", role="system")
+        await task.queue_frames(
+            [
+                TTSSpeakFrame(
+                    "I cannot hear your microphone yet. Please check that you are unmuted, then try speaking again.",
+                    append_to_context=False,
+                )
+            ]
+        )
+
+
 async def _record_fact(params: FunctionCallParams, session) -> None:
     try:
         arguments = dict(params.arguments)
@@ -307,6 +327,8 @@ async def run_cascade(session, settings: Settings) -> None:
     async def transcript_update(_processor, frame):
         for message in frame.messages:
             if message.role in {"user", "assistant"} and message.content.strip():
+                if message.role == "user":
+                    session.user_transcript_received.set()
                 await _trace(
                     session, "transcript", role=message.role, content=message.content.strip()
                 )
@@ -367,9 +389,11 @@ async def run_cascade(session, settings: Settings) -> None:
         logger.info("voice_participant_joined session_id={}", session.id)
         await _trace(session, "participant_joined", role="system")
         opening = NEW_OPENING if session.conversation_mode == "new" else RETURNING_OPENING
+        session.opening_is_playing = True
         await task.queue_frames([TTSSpeakFrame(opening, append_to_context=True)])
         logger.info("voice_opening_queued session_id={}", session.id)
         await _trace(session, "opening_queued", role="assistant", content=opening)
+        asyncio.create_task(_warn_if_no_input(session, task))
 
     @transport.event_handler("on_participant_left")
     async def left(_transport, participant, reason):
