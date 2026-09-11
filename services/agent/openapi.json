@@ -463,6 +463,15 @@
             "type": "string",
             "format": "uuid",
             "title": "Request Id"
+          },
+          "conversation_mode": {
+            "type": "string",
+            "enum": [
+              "new",
+              "returning"
+            ],
+            "title": "Conversation Mode",
+            "default": "returning"
           }
         },
         "type": "object",

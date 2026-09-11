@@ -25,6 +25,7 @@ from app.errors import (
 
 class StartVoice(BaseModel):
     request_id: UUID
+    conversation_mode: Literal["new", "returning"] = "returning"
 
 
 class VoiceState(BaseModel):
@@ -53,6 +54,7 @@ class Session:
     token: str = field(repr=False)
     bot_token: str = field(repr=False)
     expires_at: int
+    conversation_mode: Literal["new", "returning"] = "returning"
     status: str = "starting"
     error: str | None = None
     error_code: str | None = None
@@ -101,7 +103,9 @@ class VoiceSessions:
         self.run_pipeline = run_pipeline
         self.finance_store = finance_store
 
-    async def start(self, owner: str, request_id: UUID) -> VoiceConnection:
+    async def start(
+        self, owner: str, request_id: UUID, conversation_mode: Literal["new", "returning"] = "returning"
+    ) -> VoiceConnection:
         if not self.settings.voice_ready:
             raise VOICE_NOT_CONFIGURED.as_http_exception()
         async with self.lock:
@@ -170,6 +174,7 @@ class VoiceSessions:
                 tokens[0],
                 tokens[1],
                 expires,
+                conversation_mode,
                 created_monotonic=started,
             )
             session.finance_store = self.finance_store

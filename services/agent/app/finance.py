@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -24,6 +25,17 @@ class FinancialFactInput(BaseModel):
     certainty: str = "confirmed"
     fact_id: UUID | None = None
 
+    @field_validator("amount_rupees", mode="before")
+    @classmethod
+    def normalize_amount(cls, value: object) -> int:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            cleaned = re.sub(r"[^0-9]", "", value)
+            if cleaned:
+                return int(cleaned)
+        raise ValueError("amount must be a whole number of rupees")
+
     @field_validator("category")
     @classmethod
     def valid_category(cls, value: str) -> str:
@@ -34,6 +46,7 @@ class FinancialFactInput(BaseModel):
     @field_validator("certainty")
     @classmethod
     def valid_certainty(cls, value: str) -> str:
+        value = {"certain": "confirmed", "likely": "estimated", "variable": "uncertain"}.get(value, value)
         if value not in {"confirmed", "estimated", "uncertain", "unknown"}:
             raise ValueError("unsupported certainty")
         return value

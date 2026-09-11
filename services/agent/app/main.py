@@ -123,7 +123,7 @@ async def start_voice(
     user_id: Annotated[str, Depends(require_service)],
 ) -> VoiceConnection:
     response.headers["Cache-Control"] = "no-store"
-    return await request.app.state.voice.start(user_id, body.request_id)
+    return await request.app.state.voice.start(user_id, body.request_id, body.conversation_mode)
 
 
 @app.get("/v1/voice/{session_id}", response_model=VoiceState, operation_id="get_voice")

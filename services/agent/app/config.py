@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"
     stt_model: str = "scribe_v2_realtime"
-    tts_model: str = "eleven_flash_v2_5"
+    tts_model: str = "eleven_turbo_v2_5"
     # The spoken loop needs low turn latency. A deeper planning model can be added separately.
     voice_model: str = "openai/gpt-5.6-luna"
     voice_max_sessions: int = Field(default=2, ge=1, le=10)

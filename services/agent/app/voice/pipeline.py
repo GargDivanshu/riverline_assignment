@@ -49,14 +49,30 @@ income or payment, its amount and timing. Do not run a fixed questionnaire. Keep
 per turn and acknowledge corrections naturally. Age, occupation, city and family details are
 only useful when the person offers them or they affect their question. Never shame spending,
 pressure cuts, recommend new loans, promise approval, invent lender offers, or say a payment was
-made. Keep replies brief, conversational and without markdown. Speak only English.
+made. Keep replies brief, conversational and without markdown. Speak only English. For spoken
+amounts, use words such as "fifty thousand rupees", never currency symbols or numeric shorthand.
 """
 
-OPENING = (
-    "Hi, I’ll help you get a clear 30-day view of three things: money coming in, "
-    "payments you owe, and everyday spending. I’ll ask a few short questions and make "
-    "the plan as we go. Are you ready to start?"
+NEW_OPENING = (
+    "Hi, I’m Riverline. I can help you understand money coming in, payments due, "
+    "and everyday spending. I’ll keep this simple. Are you ready to begin?"
 )
+RETURNING_OPENING = (
+    "Welcome back. We can update your current plan or look at one payment. "
+    "What would you like to work on?"
+)
+
+
+def conversation_instruction(mode: str) -> str:
+    if mode == "new":
+        return """This is an explicit first-time onboarding. The fixed opening has already played.
+After the person agrees, do not ask why they came here. Ask exactly: "What do you do for work,
+or how does money usually come in for you?" Then learn only the next missing fact that makes the
+plan useful: reliable income, irregular income, cash available, a due payment, or a necessary
+expense. Explain purpose before asking a question, and never mention a form or survey."""
+    return """This is a returning-user conversation. The fixed opening has already played.
+Do not repeat onboarding or ask what brought them here. Ask one focused question about the payment,
+income, expense, or plan change they want to discuss. Existing financial facts remain their context."""
 
 TOOLS = ToolsSchema(
     standard_tools=[
@@ -208,7 +224,7 @@ async def run_cascade(session, settings: Settings) -> None:
         [
             {
                 "role": "system",
-                "content": f"Today is {datetime.now(ZoneInfo('Asia/Kolkata')).date().isoformat()}.\n{INSTRUCTIONS}",
+                "content": f"Today is {datetime.now(ZoneInfo('Asia/Kolkata')).date().isoformat()}.\n{conversation_instruction(session.conversation_mode)}\n{INSTRUCTIONS}",
             }
         ],
         tools=TOOLS,
@@ -251,7 +267,8 @@ async def run_cascade(session, settings: Settings) -> None:
         session.status = "active"
         session.activity = "thinking"
         logger.info("voice_participant_joined session_id={}", session.id)
-        await task.queue_frames([TTSSpeakFrame(OPENING, append_to_context=True)])
+        opening = NEW_OPENING if session.conversation_mode == "new" else RETURNING_OPENING
+        await task.queue_frames([TTSSpeakFrame(opening, append_to_context=True)])
         logger.info("voice_opening_queued session_id={}", session.id)
 
     @transport.event_handler("on_participant_left")

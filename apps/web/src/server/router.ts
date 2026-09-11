@@ -6,10 +6,10 @@ import { protectedProcedure, router } from "./trpc";
 
 export const appRouter = router({
   voice: router({
-    start: protectedProcedure.input(z.object({ requestId: z.uuid() })).mutation(async ({ ctx, input }) => {
+    start: protectedProcedure.input(z.object({ requestId: z.uuid(), conversationMode: z.enum(["new", "returning"]).default("returning") })).mutation(async ({ ctx, input }) => {
       try {
         const result = await agentClient(ctx.session.user.id, 40_000).POST("/v1/voice/start", {
-          body: { request_id: input.requestId },
+          body: { request_id: input.requestId, conversation_mode: input.conversationMode },
         });
         if (!result.data) throw agentError(result, "Could not start voice. Try again shortly.");
         return result.data;

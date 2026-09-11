@@ -6,7 +6,7 @@ import { AudioLines, LoaderCircle, Mic, MicOff, PhoneOff, Sparkles, Volume2 } fr
 import { trpc } from "@/lib/trpc-client";
 import { Button } from "./ui/button";
 
-export function LiveConversation({ onActiveChange }: { onActiveChange: (active: boolean) => void }) {
+export function LiveConversation({ onActiveChange, mode = "returning" }: { onActiveChange: (active: boolean) => void; mode?: "new" | "returning" }) {
   const [phase, setPhase] = useState<"idle" | "starting" | "connected" | "ending">("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -91,7 +91,7 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
       permission.getTracks().forEach(track => track.stop());
       if (cancelled.current) throw new Error("Closed");
       attempt.current ??= crypto.randomUUID();
-      const connection = await start.mutateAsync({ requestId: attempt.current });
+      const connection = await start.mutateAsync({ requestId: attempt.current, conversationMode: mode });
       createdId = connection.session_id;
       if (cancelled.current) throw new Error("Closed");
       setSessionId(createdId);

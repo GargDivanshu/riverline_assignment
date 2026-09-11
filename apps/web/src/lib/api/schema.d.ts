@@ -160,6 +160,12 @@ export interface components {
              * Format: uuid
              */
             request_id: string;
+            /**
+             * Conversation Mode
+             * @default returning
+             * @enum {string}
+             */
+            conversation_mode: "new" | "returning";
         };
         /** ValidationError */
         ValidationError: {
