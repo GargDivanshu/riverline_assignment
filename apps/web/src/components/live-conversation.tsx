@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DailyCall } from "@daily-co/daily-js";
-import { Mic, MicOff, PhoneOff } from "lucide-react";
+import { AudioLines, LoaderCircle, Mic, MicOff, PhoneOff, Sparkles, Volume2 } from "lucide-react";
 import { trpc } from "@/lib/trpc-client";
 import { Button } from "./ui/button";
 
@@ -17,6 +17,8 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
   const busy = useRef(false);
   const cancelled = useRef(false);
   const attempt = useRef<string | null>(null);
+  const remoteAudioStarted = useRef(false);
+  const joinTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const start = trpc.voice.start.useMutation();
   const end = trpc.voice.end.useMutation();
   const state = trpc.voice.status.useQuery({ sessionId: sessionId ?? "" }, {
@@ -26,7 +28,11 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
 
   useEffect(() => {
     cancelled.current = false;
-    return () => { cancelled.current = true; void call.current?.destroy(); };
+    return () => {
+      cancelled.current = true;
+      if (joinTimeout.current) clearTimeout(joinTimeout.current);
+      void call.current?.destroy();
+    };
   }, []);
 
   useEffect(() => onActiveChange(phase !== "idle"), [onActiveChange, phase]);
@@ -48,6 +54,9 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
     const current = call.current;
     call.current = null;
     if (current) await current.destroy();
+    if (joinTimeout.current) clearTimeout(joinTimeout.current);
+    joinTimeout.current = null;
+    remoteAudioStarted.current = false;
     if (audio.current) audio.current.srcObject = null;
     setBotPresent(false);
     setMuted(false);
@@ -85,6 +94,8 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
       call.current = current;
       current.on("track-started", event => {
         if (event?.participant?.local || event?.track.kind !== "audio") return;
+        remoteAudioStarted.current = true;
+        if (joinTimeout.current) clearTimeout(joinTimeout.current);
         setBotPresent(true);
         if (audio.current) {
           audio.current.srcObject = new MediaStream([event.track]);
@@ -100,6 +111,11 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
       await current.join({ url: connection.room_url, token: connection.token, userName: "You" });
       if (cancelled.current) throw new Error("Closed");
       setPhase("connected");
+      joinTimeout.current = setTimeout(() => {
+        if (remoteAudioStarted.current) return;
+        setError("Riverline could not begin this call. Ending it safely — please try again.");
+        void disconnect();
+      }, 15_000);
     } catch (failure) {
       const denied = failure instanceof DOMException && failure.name === "NotAllowedError";
       const unavailable = failure instanceof Error && failure.message === "microphone_unavailable";
@@ -115,14 +131,17 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
   }
 
   const stopped = state.data?.status === "failed" || state.data?.status === "ended";
+  const status = phase === "idle" ? "Ready when you are" : phase === "starting" ? "Setting up a private call" : phase === "ending" ? "Ending your conversation" : botPresent ? "Riverline is speaking" : "Riverline is getting ready";
   return <div className="live-conversation">
-    <p>Live English conversation. Audio and text are processed by Daily, ElevenLabs and OpenRouter. This app does not save recordings; conversation context lasts for this call.</p>
-    <p>We can clarify your situation here. Financial calculations and saved plans are not connected yet.</p>
-    <div role="status" aria-live="polite">
-      {phase === "idle" ? "Ready when you are." : phase === "starting" ? "Connecting your microphone and agent…" : phase === "ending" ? "Ending conversation…" : stopped ? "Conversation stopped." : botPresent ? "Connected — speak naturally, and interrupt whenever needed." : "Connected — waiting for the agent…"}
+    <div className={`voice-stage phase-${phase} ${botPresent ? "is-speaking" : ""}`}>
+      <div className="voice-pulse" aria-hidden="true"><div><Sparkles size={24} /></div></div>
+      <div className="voice-stage-copy">
+        <span className="voice-status"><span className="voice-status-icon">{phase === "starting" || phase === "ending" ? <LoaderCircle size={15} className="animate-spin" /> : botPresent ? <Volume2 size={15} /> : <AudioLines size={15} />}</span>{status}</span>
+        <p>{phase === "connected" && !botPresent ? "This should take only a few seconds." : botPresent ? "You can speak naturally and interrupt whenever you need." : "Your audio stays live only for this call."}</p>
+      </div>
     </div>
-    {(error || state.data?.error || state.error) && <p role="alert">{error || state.data?.error || "Connection status unavailable. End the call and try again."}{state.data?.error_code && <small> Reference: {state.data.error_code}</small>}</p>}
-    <audio ref={audio} autoPlay controls aria-label="Agent audio" />
+    {(error || state.data?.error || state.error) && <p className="voice-error" role="alert">{error || state.data?.error || "Connection status unavailable. End the call and try again."}{state.data?.error_code && <small> Reference: {state.data.error_code}</small>}</p>}
+    <audio ref={audio} autoPlay aria-label="Agent audio" />
     <div className="flex flex-wrap gap-3">
       {phase === "idle" ? <Button onClick={connect}><Mic size={16} />Start live conversation</Button> : <>
         <Button variant="outline" disabled={phase !== "connected" || stopped} onClick={() => {
@@ -131,6 +150,7 @@ export function LiveConversation({ onActiveChange }: { onActiveChange: (active: 
         <Button variant="destructive" disabled={phase !== "connected"} onClick={disconnect}><PhoneOff size={16} />End conversation</Button>
       </>}
     </div>
+    <p className="voice-disclosure">English voice is processed by Daily, ElevenLabs and OpenRouter. Recordings are not saved; context ends with this call.</p>
   </div>;
 }
 

@@ -55,8 +55,8 @@ async def run_cascade(session, settings: Settings) -> None:
     llm = OpenRouterLLMService(
         api_key=settings.openrouter_api_key,
         settings=OpenRouterLLMService.Settings(
-            model=settings.llm_model,
-            max_completion_tokens=800,
+            model=settings.voice_model,
+            max_completion_tokens=180,
         ),
     )
     tts = ElevenLabsTTSService(

@@ -23,7 +23,7 @@ flowchart TB
   DAILY -.-> PIPE[Pipecat conversation task]
   API -.->|Start and end session| PIPE
   PIPE -.-> STT[Streaming speech recognition]
-  STT -.-> LLM[GPT-5.6 Terra through OpenRouter]
+  STT -.-> LLM[GPT-5.6 Luna through OpenRouter]
   LLM -.-> TTS[Streaming speech synthesis]
   TTS -.-> DAILY
   LLM -.-> TOOLS[Validated financial tools]

@@ -69,7 +69,7 @@ For a production web build locally, use `npm run build` then `npm start` instead
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Both enable Google OAuth | Optional |
 | `DAILY_API_KEY` | Creates private, short-lived Daily rooms and participant tokens | Yes for voice |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | Streaming speech recognition and speech synthesis | Yes for voice |
-| `OPENROUTER_API_KEY`, `LLM_MODEL` | Streaming conversational model; default `openai/gpt-5.6-terra` | Yes for voice |
+| `OPENROUTER_API_KEY`, `VOICE_MODEL` | Low-latency spoken-turn model; default `openai/gpt-5.6-luna` | Yes for voice |
 | `STT_MODEL`, `TTS_MODEL` | Streaming speech-model choices | Defaults provided |
 | `VOICE_MAX_SESSIONS`, `VOICE_MAX_SECONDS` | Local concurrency and maximum call duration | Defaults provided |
 | `SARVAM_API_KEY`, `OPENAI_API_KEY` | Reserved alternatives, not in current cascade | No |
