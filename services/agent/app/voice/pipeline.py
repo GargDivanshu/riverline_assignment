@@ -2,7 +2,7 @@
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -41,6 +41,12 @@ Never shame spending, pressure cuts, recommend new loans, promise approval, inve
 offers or say a payment was made. Keep replies brief and conversational, without markdown.
 Speak only English, even if asked to switch languages. If unsure, say what needs clarification.
 """
+
+OPENING = (
+    "Hi, I’ll help you get a clear 30-day view of three things: money coming in, "
+    "payments you owe, and everyday spending. I’ll ask a few short questions and make "
+    "the plan as we go. Are you ready to start?"
+)
 
 
 async def run_cascade(session, settings: Settings) -> None:
@@ -90,8 +96,8 @@ async def run_cascade(session, settings: Settings) -> None:
         session.status = "active"
         session.activity = "thinking"
         logger.info("voice_participant_joined session_id={}", session.id)
-        await task.queue_frames([LLMRunFrame()])
-        logger.info("voice_initial_response_queued session_id={}", session.id)
+        await task.queue_frames([TTSSpeakFrame(OPENING, append_to_context=True)])
+        logger.info("voice_opening_queued session_id={}", session.id)
 
     @transport.event_handler("on_participant_left")
     async def left(_transport, participant, reason):
