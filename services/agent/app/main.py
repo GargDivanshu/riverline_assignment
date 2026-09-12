@@ -20,8 +20,12 @@ from app.finance import FinanceStore
 from app.models import Workspace
 from app.voice.sessions import StartVoice, VoiceConnection, VoiceSessions, VoiceState
 
-# Provider debug logs can include conversation content. Keep them out of app logs.
-logger.disable("pipecat")
+# Provider debug logs can include conversation content, so they are normally disabled.
+# Temporarily re-enabled while diagnosing the no-user-audio issue: `logger.disable("pipecat")`
+# was silencing every pipecat-internal log, including the Daily subscription/media events
+# needed to see why the bot never receives microphone audio. Restore the disable() call
+# (or replace with a warning-level-only filter) once that is diagnosed.
+# logger.disable("pipecat")
 
 
 @asynccontextmanager

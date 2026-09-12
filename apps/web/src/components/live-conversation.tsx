@@ -12,6 +12,9 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
   const [error, setError] = useState("");
   const [muted, setMuted] = useState(false);
   const [audioBlocked, setAudioBlocked] = useState(false);
+  // Temporary diagnostic for the open microphone-delivery investigation. Remove once
+  // a user transcript is confirmed reaching the server from this client build.
+  const [micDiagnostic, setMicDiagnostic] = useState("");
   const call = useRef<DailyCall | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const busy = useRef(false);
@@ -103,11 +106,23 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       });
       call.current = current;
       current.on("track-started", event => {
-        if (event?.participant?.local || event?.track.kind !== "audio") return;
+        if (event?.track.kind !== "audio") return;
+        if (event.participant?.local) {
+          const readyState = event.track.readyState;
+          const muted = event.track.muted;
+          console.info("[mic-diagnostic] local audio track-started", { readyState, muted });
+          setMicDiagnostic(`local track started: readyState=${readyState} muted=${muted}`);
+          return;
+        }
         if (audio.current) {
           audio.current.srcObject = new MediaStream([event.track]);
           void audio.current.play().catch(() => setAudioBlocked(true));
         }
+      });
+      current.on("track-stopped", event => {
+        if (event?.track.kind !== "audio" || !event.participant?.local) return;
+        console.info("[mic-diagnostic] local audio track-stopped");
+        setMicDiagnostic("local track stopped");
       });
       current.on("error", () => {
         setError("The audio connection failed. Ending the call safely.");
@@ -116,6 +131,17 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       await current.join({ url: connection.room_url, token: connection.token, userName: "You" });
       if (cancelled.current) throw new Error("Closed");
       setPhase("connected");
+      // Daily's own account of the local track a few seconds after join. This is the
+      // single fact every prior fix attempt was missing: whether the browser ever
+      // handed Daily a live, unmuted microphone track at all.
+      setTimeout(() => {
+        if (cancelled.current || !call.current) return;
+        const local = call.current.participants?.().local;
+        const audioState = local?.tracks?.audio;
+        const summary = `mic state=${audioState?.state ?? "unknown"} off=${audioState?.off?.byUser ?? "n/a"} subscribed=${String(audioState?.subscribed)}`;
+        console.info("[mic-diagnostic] post-join local audio state", audioState);
+        setMicDiagnostic(previous => previous ? `${previous} | ${summary}` : summary);
+      }, 3000);
       joinTimeout.current = setTimeout(() => {
         if (agentSpoke.current) return;
         setError("Riverline could not begin this call. Ending it safely — please try again.");
@@ -147,6 +173,7 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       </div>
     </div>
     {(error || state.data?.error || state.error) && <p className="voice-error" role="alert">{error || state.data?.error || "Connection status unavailable. End the call and try again."}{state.data?.error_code && <small> Reference: {state.data.error_code}</small>}</p>}
+    {micDiagnostic && <p style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.7 }}>{micDiagnostic}</p>}
     <audio ref={audio} autoPlay aria-label="Agent audio" />
     <div className="flex flex-wrap gap-3">
       {phase === "idle" ? <Button onClick={connect}><Mic size={16} />Start live conversation</Button> : <>

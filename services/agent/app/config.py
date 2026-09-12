@@ -13,8 +13,10 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"
     stt_model: str = "scribe_v2_realtime"
     tts_model: str = "eleven_turbo_v2_5"
-    # The spoken loop needs low turn latency. A deeper planning model can be added separately.
-    voice_model: str = "openai/gpt-5.6-luna"
+    # Luna's tool-calling proved unreliable in live calls: repeated malformed function-call
+    # JSON, occasional unrecovered stalls, and one call-ending JSONDecodeError from its
+    # streamed response. Terra trades some turn latency for correctness here.
+    voice_model: str = "openai/gpt-5.6-terra"
     voice_max_sessions: int = Field(default=2, ge=1, le=10)
     voice_max_seconds: int = Field(default=900, ge=60, le=1800)
     model_config = SettingsConfigDict(extra="ignore")

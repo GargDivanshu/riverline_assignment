@@ -23,7 +23,7 @@ services:
       ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-21m00Tcm4TlvDq8ikWAM}
       STT_MODEL: ${STT_MODEL:-scribe_v2_realtime}
       TTS_MODEL: ${TTS_MODEL:-eleven_turbo_v2_5}
-      VOICE_MODEL: ${VOICE_MODEL:-openai/gpt-5.6-luna}
+      VOICE_MODEL: ${VOICE_MODEL:-openai/gpt-5.6-terra}
       VOICE_MAX_SESSIONS: ${VOICE_MAX_SESSIONS:-2}
       VOICE_MAX_SECONDS: ${VOICE_MAX_SECONDS:-900}
     healthcheck:

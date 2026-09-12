@@ -66,6 +66,10 @@ class Session:
     user_transcript_received: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     opening_playback_finished: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     opening_is_playing: bool = field(default=False, repr=False)
+    # A single malformed LLM stream response is a provider hiccup, not a reason to end
+    # a financial-planning conversation. Bounded so a genuinely broken provider still
+    # ends the call rather than limping along silently forever.
+    recoverable_llm_errors: int = field(default=0, repr=False)
 
     def state(self) -> VoiceState:
         return VoiceState(

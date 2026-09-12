@@ -19,20 +19,26 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.processors.transcript_processor import TranscriptProcessor
-from pipecat.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
+from pipecat.services.elevenlabs.stt import CommitStrategy, ElevenLabsRealtimeSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
-from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
+from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
+    TranscriptionUserTurnStartStrategy,
+)
+from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
+    SpeechTimeoutUserTurnStopStrategy,
+)
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pydantic import ValidationError
 
 from app.config import Settings
 from app.errors import classify_voice_error, log_voice_error
 from app.finance import FinancialFactInput
 from app.voice.activity import VoiceActivityProcessor
-from app.voice.transcript_turn_gate import TranscriptTurnGate
+from app.voice.audio_received_signal import AudioReceivedSignal
 
 INSTRUCTIONS = """You are Riverline, a calm English-only financial conversation assistant.
 You keep a 30-day money view in the workspace while speaking. The record_financial_fact
@@ -177,6 +183,62 @@ async def _warn_if_no_input(session, task: PipelineTask) -> None:
         )
 
 
+class ResponseStallWatchdog:
+    """Speak an honest acknowledgement if the model goes quiet for too long.
+
+    A user turn can involve several internal round-trips (record a fact, then
+    fetch the snapshot, then finally speak) before anything is heard. Observed
+    calls show that chain normally finishes in well under this bound; when the
+    model or provider stalls, prior behavior was total silence with no error
+    and no indication anything was happening at all.
+    """
+
+    def __init__(self, session, task: PipelineTask, *, timeout_secs: float = 15.0):
+        self._session = session
+        self._task = task
+        self._timeout_secs = timeout_secs
+        self._pending: asyncio.Task[None] | None = None
+
+    def on_user_turn(self) -> None:
+        self._cancel()
+        self._pending = asyncio.create_task(self._warn_after_timeout())
+
+    def on_assistant_turn(self) -> None:
+        self._cancel()
+
+    def _cancel(self) -> None:
+        if self._pending:
+            self._pending.cancel()
+            self._pending = None
+
+    async def _warn_after_timeout(self) -> None:
+        try:
+            await asyncio.sleep(self._timeout_secs)
+        except asyncio.CancelledError:
+            return
+        # The call may have ended normally while this was pending; a fallback
+        # frame queued into a torn-down pipeline would be a spurious failure.
+        if self._session.status not in ("starting", "active"):
+            return
+        logger.warning("voice_llm_stall session_id={}", self._session.id)
+        await _trace(self._session, "llm_stall", role="system")
+        try:
+            await self._task.queue_frames(
+                [
+                    TTSSpeakFrame(
+                        "Sorry, that is taking longer than it should. I'm still working on it.",
+                        append_to_context=False,
+                    )
+                ]
+            )
+        except Exception as error:  # noqa: BLE001 - a stale watchdog must never crash the pipeline
+            logger.debug(
+                "voice_llm_stall_notice_failed session_id={} error_type={}",
+                self._session.id,
+                type(error).__name__,
+            )
+
+
 async def _record_fact(params: FunctionCallParams, session) -> None:
     try:
         arguments = dict(params.arguments)
@@ -278,8 +340,17 @@ async def run_cascade(session, settings: Settings) -> None:
     logger.info("voice_pipeline_stage session_id={} stage=creating_stt", session.id)
     stt = ElevenLabsRealtimeSTTService(
         api_key=settings.elevenlabs_api_key,
+        # Default commit_strategy is MANUAL: ElevenLabs only finalizes a segment when
+        # Pipecat's own VAD sends a stop-speaking frame. This transport has no VAD
+        # analyzer configured (a Daily/Pipecat VAD proved unreliable for turn-taking
+        # earlier in this project), so nothing ever triggered a commit — every prior
+        # call was silently falling back to ElevenLabs' own ~30s safety-net commit.
+        # Using ElevenLabs' own server-side VAD instead needs no Pipecat VAD analyzer.
+        commit_strategy=CommitStrategy.VAD,
         settings=ElevenLabsRealtimeSTTService.Settings(
-            model=settings.stt_model, language=Language.EN
+            model=settings.stt_model,
+            language=Language.EN,
+            vad_silence_threshold_secs=0.6,
         ),
     )
     logger.info("voice_pipeline_stage session_id={} stage=creating_llm", session.id)
@@ -317,23 +388,26 @@ async def run_cascade(session, settings: Settings) -> None:
     user, assistant = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            user_turn_strategies=ExternalUserTurnStrategies(),
+            # No VAD analyzer is attached to this transport (unreliable for turn-taking
+            # earlier in this project), so turn boundaries come from transcripts alone:
+            # a turn starts on the first transcript and ends after a short quiet gap.
+            # These are pipecat's own maintained strategies for exactly that case —
+            # not reimplemented here — so the context aggregator gets the
+            # UserStartedSpeakingFrame/UserStoppedSpeakingFrame it actually expects.
+            user_turn_strategies=UserTurnStrategies(
+                start=[TranscriptionUserTurnStartStrategy()],
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)],
+            ),
         ),
     )
     transcript = TranscriptProcessor()
-    turn_gate = TranscriptTurnGate()
-
-    @transcript.event_handler("on_transcript_update")
-    async def transcript_update(_processor, frame):
-        for message in frame.messages:
-            if message.role in {"user", "assistant"} and message.content.strip():
-                if message.role == "user":
-                    session.user_transcript_received.set()
-                await _trace(
-                    session, "transcript", role=message.role, content=message.content.strip()
-                )
-
-    activity = VoiceActivityProcessor(session)
+    audio_received = AudioReceivedSignal(on_interim=session.user_transcript_received.set)
+    # stall_watchdog is assigned below, once `task` exists; the callback only calls it
+    # once real speech starts, well after that assignment has happened.
+    stall_watchdog: ResponseStallWatchdog | None = None
+    activity = VoiceActivityProcessor(
+        session, on_bot_started_speaking=lambda: stall_watchdog and stall_watchdog.on_assistant_turn()
+    )
     # Universal aggregation retains context and supports interruption/semantic turn handling.
     task = PipelineTask(
         Pipeline(
@@ -341,7 +415,7 @@ async def run_cascade(session, settings: Settings) -> None:
                 transport.input(),
                 stt,
                 transcript.user(),
-                turn_gate,
+                audio_received,
                 user,
                 llm,
                 tts,
@@ -360,6 +434,19 @@ async def run_cascade(session, settings: Settings) -> None:
     )
     session.pipeline = task
     logger.info("voice_pipeline_stage session_id={} stage=running", session.id)
+
+    stall_watchdog = ResponseStallWatchdog(session, task)
+
+    @transcript.event_handler("on_transcript_update")
+    async def transcript_update(_processor, frame):
+        for message in frame.messages:
+            if message.role in {"user", "assistant"} and message.content.strip():
+                if message.role == "user":
+                    session.user_transcript_received.set()
+                    stall_watchdog.on_user_turn()
+                await _trace(
+                    session, "transcript", role=message.role, content=message.content.strip()
+                )
 
     @transport.event_handler("on_joined")
     async def transport_joined(_transport, _data):
@@ -410,6 +497,27 @@ async def run_cascade(session, settings: Settings) -> None:
             description=getattr(frame, "error", None),
         )
         log_voice_error(public, getattr(frame, "exception", None), session_id=session.id)
+        # A malformed or truncated LLM stream chunk is a provider hiccup, not a reason
+        # to end a financial-planning conversation over one bad response. Recover a
+        # bounded number of times; a provider that keeps failing still ends the call.
+        is_llm_hiccup = public.code.startswith("voice_openrouter_") and public.retryable
+        if is_llm_hiccup and session.recoverable_llm_errors < 2:
+            session.recoverable_llm_errors += 1
+            await _trace(
+                session,
+                "llm_error_recovered",
+                role="system",
+                metadata={"code": public.code, "attempt": session.recoverable_llm_errors},
+            )
+            await task.queue_frames(
+                [
+                    TTSSpeakFrame(
+                        "Sorry, I lost my train of thought there. Could you say that again?",
+                        append_to_context=False,
+                    )
+                ]
+            )
+            return
         await _trace(session, "pipeline_failed", role="system", metadata={"code": public.code})
         session.fail(public)
         await task.cancel()

@@ -9,8 +9,18 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import asyncpg
+import dateparser
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
+
+# A financial due date must never be a silent wrong guess. dateparser resolves far more
+# phrasing than any hand-written whitelist ever will, but it can also confidently return
+# a date in the wrong month for a genuinely ambiguous phrase (observed: "3rd week of the
+# month" resolved to a date outside the current month entirely). Bounding the accepted
+# window catches that failure mode the same way an unparseable phrase is caught — as a
+# rejection the model turns into one clarifying question, not a number it treats as fact.
+_MAX_PAST_DAYS = 45
+_MAX_FUTURE_DAYS = 180
 
 from app.models import MoneyFact, PlanEvent, PlanSummary, Workspace
 
@@ -46,6 +56,12 @@ class FinancialFactInput(BaseModel):
             raise TypeError("date must be text")
         text = value.strip().lower()
         today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+        if text == "today":
+            return today
+        if text == "yesterday":
+            return today - timedelta(days=1)
+        if text == "tomorrow":
+            return today + timedelta(days=1)
         if text in {"end of this month", "month end", "by month end"}:
             next_month = today.replace(day=28) + timedelta(days=4)
             return next_month - timedelta(days=next_month.day)
@@ -64,7 +80,23 @@ class FinancialFactInput(BaseModel):
                 return parsed if parsed >= today else parsed.replace(year=today.year + 1)
             except ValueError:
                 continue
-        return value
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", value.strip()):
+            return value  # Let pydantic's own ISO-date coercion handle this directly.
+        parsed_dt = dateparser.parse(
+            value,
+            settings={
+                "RELATIVE_BASE": datetime.combine(today, datetime.min.time()),
+                "PREFER_DATES_FROM": "future",
+            },
+        )
+        if parsed_dt is None:
+            raise ValueError("date phrase could not be understood")
+        parsed_date = parsed_dt.date()
+        window_start = today - timedelta(days=_MAX_PAST_DAYS)
+        window_end = today + timedelta(days=_MAX_FUTURE_DAYS)
+        if not (window_start <= parsed_date <= window_end):
+            raise ValueError("date phrase resolved outside a plausible window")
+        return parsed_date
 
     @field_validator("fact_id", mode="before")
     @classmethod

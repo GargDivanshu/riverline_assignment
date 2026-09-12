@@ -10,6 +10,7 @@ dependencies = [
   "tzdata>=2025.2",
   "pipecat-ai[daily,elevenlabs,openrouter]>=0.0.105,<1",
   "asyncpg==0.31.0",
+  "dateparser>=1.4.3",
 ]
 
 [dependency-groups]
