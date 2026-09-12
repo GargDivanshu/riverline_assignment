@@ -159,6 +159,8 @@ class VoiceSessions:
                                 "is_owner": False,
                                 "user_id": identity,
                                 "start_video_off": True,
+                                "start_audio_off": False,
+                                "permissions": {"canSend": ["audio"]},
                             }
                         },
                     )

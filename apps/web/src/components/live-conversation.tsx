@@ -96,7 +96,11 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       if (cancelled.current) throw new Error("Closed");
       setSessionId(createdId);
       const Daily = (await import("@daily-co/daily-js")).default;
-      const current = Daily.createCallObject({ videoSource: false });
+      const current = Daily.createCallObject({
+        videoSource: false,
+        audioSource: true,
+        startAudioOff: false,
+      });
       call.current = current;
       current.on("track-started", event => {
         if (event?.participant?.local || event?.track.kind !== "audio") return;
