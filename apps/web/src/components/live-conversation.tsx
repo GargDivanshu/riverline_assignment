@@ -14,12 +14,10 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
   const [audioBlocked, setAudioBlocked] = useState(false);
   const call = useRef<DailyCall | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
-  const microphone = useRef<MediaStream | null>(null);
   const busy = useRef(false);
   const cancelled = useRef(false);
   const attempt = useRef<string | null>(null);
   const agentSpoke = useRef(false);
-  const microphonePublished = useRef(false);
   const joinTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const start = trpc.voice.start.useMutation();
   const end = trpc.voice.end.useMutation();
@@ -62,12 +60,9 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
     const current = call.current;
     call.current = null;
     if (current) await current.destroy();
-    microphone.current?.getTracks().forEach(track => track.stop());
-    microphone.current = null;
     if (joinTimeout.current) clearTimeout(joinTimeout.current);
     joinTimeout.current = null;
     agentSpoke.current = false;
-    microphonePublished.current = false;
     if (audio.current) audio.current.srcObject = null;
     setAudioBlocked(false);
     setMuted(false);
@@ -93,12 +88,7 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       // Ask before creating a paid room; this click follows the visible disclosure below.
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("microphone_unavailable");
       const permission = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      const microphoneTrack = permission.getAudioTracks()[0];
-      if (!microphoneTrack || microphoneTrack.readyState !== "live") {
-        permission.getTracks().forEach(track => track.stop());
-        throw new Error("microphone_unavailable");
-      }
-      microphone.current = permission;
+      permission.getTracks().forEach(track => track.stop());
       if (cancelled.current) throw new Error("Closed");
       attempt.current ??= crypto.randomUUID();
       const connection = await start.mutateAsync({ requestId: attempt.current, conversationMode: mode });
@@ -106,14 +96,10 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       if (cancelled.current) throw new Error("Closed");
       setSessionId(createdId);
       const Daily = (await import("@daily-co/daily-js")).default;
-      const current = Daily.createCallObject({ videoSource: false, audioSource: false });
+      const current = Daily.createCallObject({ videoSource: false });
       call.current = current;
       current.on("track-started", event => {
-        if (event?.track.kind !== "audio") return;
-        if (event.participant?.local) {
-          microphonePublished.current = true;
-          return;
-        }
+        if (event?.participant?.local || event?.track.kind !== "audio") return;
         if (audio.current) {
           audio.current.srcObject = new MediaStream([event.track]);
           void audio.current.play().catch(() => setAudioBlocked(true));
@@ -123,14 +109,7 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
         setError("The audio connection failed. Ending the call safely.");
         void disconnect();
       });
-      current.on("camera-error", event => {
-        if (event.error.type === "mic-in-use" || event.error.type === "permissions") {
-          setError("Your microphone could not be sent to Riverline. Check browser microphone access and start a new call.");
-        }
-      });
       await current.join({ url: connection.room_url, token: connection.token, userName: "You" });
-      await current.setInputDevicesAsync({ audioSource: microphoneTrack, videoSource: false });
-      current.setLocalAudio(true);
       if (cancelled.current) throw new Error("Closed");
       setPhase("connected");
       joinTimeout.current = setTimeout(() => {
@@ -138,10 +117,6 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
         setError("Riverline could not begin this call. Ending it safely — please try again.");
         void disconnect();
       }, 15_000);
-      setTimeout(() => {
-        if (microphonePublished.current || cancelled.current) return;
-        setError("Your microphone connected but was not published to Riverline. End this call and start a new one.");
-      }, 5_000);
     } catch (failure) {
       const denied = failure instanceof DOMException && failure.name === "NotAllowedError";
       const unavailable = failure instanceof Error && failure.message === "microphone_unavailable";
