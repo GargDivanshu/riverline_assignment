@@ -26,6 +26,7 @@ playwright-report/
 /.Tmp/
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 
 # Supplied local reference video
 /do-you-have-enough-money-for-your-emis-plan-with-riverline.mp4
