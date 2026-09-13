@@ -217,11 +217,11 @@ paraphrases, or was used to draft it.
 
 ## Demo video
 
+[Watch the demo](https://drive.google.com/file/d/15jjaLHt04jDqdTDm_0eWwEkQTZ1sd5px/view?usp=drive_link)
+
 Not committed to this repository — `.Tmp/` (where working recordings were
 kept during development) is git-ignored, and the reference product video is
-excluded from git by filename in `.gitignore`. Submit the demo video as its
-own file per the submission form's instructions, or add it at the repo root
-under a different filename if you want it version-controlled here.
+excluded from git by filename in `.gitignore`.
 
 ## Verification results
 
