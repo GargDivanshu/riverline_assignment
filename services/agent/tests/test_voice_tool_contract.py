@@ -77,9 +77,13 @@ class FakeFinanceStore:
         return None
 
 
-def _session(store):
+def _session(store, utterance=""):
     return SimpleNamespace(
-        id="session-1", owner="owner-1", finance_store=store, created_monotonic=time.monotonic()
+        id="session-1",
+        owner="owner-1",
+        finance_store=store,
+        created_monotonic=time.monotonic(),
+        last_user_utterance=utterance,
     )
 
 
@@ -166,6 +170,101 @@ def test_patch_to_a_stale_fact_id_gets_its_own_explicit_error_code():
         payload = captured["payload"]
         assert payload["status"] == "rejected"
         assert payload["error_code"] == "fact_not_found"
+
+    asyncio.run(scenario())
+
+
+def test_amount_mismatch_is_rejected_before_it_ever_reaches_the_store():
+    # The exact live failure end to end: "eighteen thousand" spoken, 10000
+    # proposed by the tool call — must never persist.
+    async def scenario():
+        store = FakeFinanceStore()
+        session = _session(store, utterance="I have eighteen thousand rupees available in my bank.")
+        params, captured = _params(
+            {"category": "opening_cash", "label": "Bank cash", "amount_rupees": 10_000, "certainty": "confirmed"}
+        )
+        await _record_fact(params, session)
+        payload = captured["payload"]
+        assert payload["status"] == "rejected"
+        assert payload["error_code"] == "amount_transcript_mismatch"
+        assert payload["proposed_amount_rupees"] == 10_000
+        assert 18_000 in payload["user_amount_rupees"]
+        assert store._facts == {}  # nothing persisted
+
+    asyncio.run(scenario())
+
+
+def test_unevidenced_due_date_is_rejected_before_it_ever_reaches_the_store():
+    # The exact other live failure: no date mentioned at all, yet a due_date
+    # was about to be saved as confirmed.
+    async def scenario():
+        store = FakeFinanceStore()
+        session = _session(
+            store,
+            utterance="this month I have some twenty-two thousand rupees in the card bill which I need to be paying",
+        )
+        params, captured = _params(
+            {
+                "category": "commitment",
+                "label": "Credit card bill",
+                "amount_rupees": 22_000,
+                "due_date": "2026-09-25",
+                "certainty": "confirmed",
+            }
+        )
+        await _record_fact(params, session)
+        payload = captured["payload"]
+        assert payload["status"] == "rejected"
+        assert payload["error_code"] == "date_not_evidenced"
+        assert store._facts == {}
+
+    asyncio.run(scenario())
+
+
+def test_resolving_an_unnamed_fact_is_rejected_even_though_the_id_is_real():
+    # The exact live failure: "the rent was already paid" must not resolve a
+    # completely unrelated subscription just because fact_id points at a real,
+    # active fact.
+    async def scenario():
+        store = FakeFinanceStore()
+        session = _session(store)
+        rent_params, rent_captured = _params(
+            {"category": "expense", "label": "Rent", "amount_rupees": 15_000, "certainty": "confirmed"}
+        )
+        await _record_fact(rent_params, session)
+        gpt_params, gpt_captured = _params(
+            {"category": "expense", "label": "GPT subscription", "amount_rupees": 2_000, "certainty": "confirmed"}
+        )
+        await _record_fact(gpt_params, session)
+        gpt_id = gpt_captured["payload"]["fact"]["id"]
+
+        session.last_user_utterance = "the rent was actually paid earlier on, by the 5th of this month"
+        resolve_params, resolve_captured = _params({"fact_id": gpt_id, "resolved": True})
+        await _record_fact(resolve_params, session)
+        payload = resolve_captured["payload"]
+        assert payload["status"] == "rejected"
+        assert payload["error_code"] == "resolution_not_evidenced"
+        assert store._facts[gpt_id]  # GPT subscription is still active
+
+    asyncio.run(scenario())
+
+
+def test_resolving_the_actually_named_fact_still_works():
+    async def scenario():
+        store = FakeFinanceStore()
+        session = _session(store)
+        rent_params, rent_captured = _params(
+            {"category": "expense", "label": "Rent", "amount_rupees": 15_000, "certainty": "confirmed"}
+        )
+        await _record_fact(rent_params, session)
+        rent_id = rent_captured["payload"]["fact"]["id"]
+
+        session.last_user_utterance = "the rent was actually paid earlier on, by the 5th of this month"
+        resolve_params, resolve_captured = _params({"fact_id": rent_id, "resolved": True})
+        await _record_fact(resolve_params, session)
+        payload = resolve_captured["payload"]
+        assert payload["status"] == "success"
+        assert rent_id not in store._facts  # resolved facts are removed by the fake store
 
     asyncio.run(scenario())
 

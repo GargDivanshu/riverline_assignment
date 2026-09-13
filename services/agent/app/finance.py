@@ -13,6 +13,8 @@ import dateparser
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from app.numbers import extract_rupee_amounts
+
 # A financial due date must never be a silent wrong guess. dateparser resolves far more
 # phrasing than any hand-written whitelist ever will, but it can also confidently return
 # a date in the wrong month for a genuinely ambiguous phrase (observed: "3rd week of the
@@ -334,6 +336,126 @@ def shape_validation_errors(error: ValidationError | ValueError) -> list[dict]:
     return [{"field": None, "message": str(error)}]
 
 
+_DATE_KEYWORDS = {
+    # Deliberately excludes generic time words like "month"/"week"/"next"/"due" —
+    # "this month" or "a month" says nothing about which day, and was a false
+    # positive against the exact live phrase this check exists to catch ("this
+    # month I have some twenty-two thousand rupees in the card bill"). Only
+    # words that actually pin down a specific day count as evidence.
+    "today", "tomorrow", "tonight", "yesterday",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+    "ninth", "tenth", "eleventh", "twelfth",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+}
+
+
+def _mentions_a_date(text: str) -> bool:
+    if not text:
+        return False
+    if re.search(r"\d{1,2}(st|nd|rd|th)?\b", text):
+        return True
+    return bool(set(re.findall(r"[a-z]+", text.lower())) & _DATE_KEYWORDS)
+
+
+def amount_matches_utterance(item: FinancialFactInput, utterance: str) -> str | None:
+    """None if a newly-stated single amount is consistent with what was said, or
+    if there's nothing to check it against; a short reason otherwise.
+
+    The live failure this guards against: the person said "eighteen thousand
+    rupees" plainly, the tool call persisted 10000, and nothing caught it —
+    the transcription itself was correct, something went wrong purely in the
+    model's own number-to-argument step. Deliberately narrow: only a single
+    point amount newly supplied this call, never a range (min/max), which
+    speech states far too loosely for a deterministic check to be fair.
+    """
+    fields_set = item.model_fields_set
+    if "amount_rupees" not in fields_set or item.amount_rupees is None:
+        return None
+    if "min_amount_rupees" in fields_set or "max_amount_rupees" in fields_set:
+        return None
+    candidates = extract_rupee_amounts(utterance)
+    if not candidates or item.amount_rupees in candidates:
+        return None
+    heard = ", ".join(str(c) for c in candidates)
+    return f"amount {item.amount_rupees} does not match what was actually said ({heard})"
+
+
+def date_is_evidenced(item: FinancialFactInput, utterance: str) -> bool:
+    """False only when a due date or recurring day was newly stated this call
+    with nothing at all in what the person said to support any date.
+
+    The other live failure this guards against: a card bill mentioned with no
+    date at all was nonetheless saved with an invented due date, marked
+    confirmed. Deliberately generous about what counts as evidence (any digit,
+    any date word) — this exists to catch a date invented from nothing, not to
+    second-guess a real one.
+    """
+    if not utterance:
+        return True  # no utterance context available (e.g. a non-voice caller) — do not block
+    fields_set = item.model_fields_set
+    mentions_date_field = ("due_date" in fields_set and item.due_date is not None) or (
+        "recurring_day_of_month" in fields_set and item.recurring_day_of_month is not None
+    )
+    if not mentions_date_field:
+        return True
+    return _mentions_a_date(utterance)
+
+
+_RESOLUTION_STOPWORDS = {
+    "the", "a", "an", "of", "and", "or", "my", "i", "paid", "pay", "already",
+    "for", "to", "is", "was", "were", "that", "this", "it", "on", "in", "by",
+    "off", "been", "have", "has", "had", "just", "now", "actually", "earlier",
+}
+
+
+def _keywords(text: str) -> set[str]:
+    return {
+        word
+        for word in re.findall(r"[a-z]+", text.lower())
+        if len(word) >= 3 and word not in _RESOLUTION_STOPWORDS
+    }
+
+
+def resolution_target_check(
+    target_label: str, utterance: str, other_active_labels: list[str]
+) -> str | None:
+    """None if resolving target_label is clearly what was just said and nothing
+    else active could equally be meant; a short reason otherwise.
+
+    The live failure this guards against: "the rent was already paid" resolved
+    four unrelated subscriptions along with rent — each of those five calls
+    individually "succeeded" against the schema, but only rent was ever named.
+    """
+    if not utterance:
+        return None  # no utterance context available (e.g. a non-voice caller) — do not block
+    utterance_words = _keywords(utterance)
+    target_words = _keywords(target_label)
+    matched = target_words & utterance_words
+    if not matched:
+        return f'"{target_label}" is not mentioned in what was just said'
+    ambiguous_with = [
+        other
+        for other in other_active_labels
+        if other != target_label and (_keywords(other) & matched)
+    ]
+    if ambiguous_with:
+        return f'what was said could equally mean {", ".join(ambiguous_with)}, not only "{target_label}"'
+    return None
+
+
+def find_fact_label(snapshot: Workspace, fact_id: str) -> tuple[str, list[str]] | None:
+    """The target fact's own label and every other active fact's label, for
+    resolution_target_check — or None if fact_id isn't an active fact (that
+    case is left to the normal fact_not_found path instead)."""
+    all_facts = [*snapshot.opening_cash, *snapshot.income, *snapshot.commitments, *snapshot.expenses]
+    target = next((fact for fact in all_facts if fact.id == fact_id), None)
+    if target is None:
+        return None
+    return target.label, [fact.label for fact in all_facts if fact.id != fact_id]
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS riverline_finance_workspaces (
   id uuid PRIMARY KEY,
@@ -453,6 +575,7 @@ class FinanceStore:
                 item.operation_id,
             )
             if inserted:
+                mutated = True
                 if item.fact_id:
                     existing = await connection.fetchrow(
                         """SELECT category, label, amount_paise, due_date, certainty,
@@ -504,42 +627,72 @@ class FinanceStore:
                         persisted.timing_note,
                     )
                 else:
-                    fact_id = uuid4()
-                    min_paise = (
-                        item.min_amount_rupees * 100 if item.min_amount_rupees is not None else None
-                    )
-                    max_paise = (
-                        item.max_amount_rupees * 100 if item.max_amount_rupees is not None else None
-                    )
-                    usable_paise = (
-                        item.usable_amount_rupees * 100
-                        if item.usable_amount_rupees is not None
-                        else None
-                    )
-                    await connection.execute(
-                        """INSERT INTO riverline_finance_facts
-                           (id, workspace_id, category, label, amount_paise, due_date, certainty,
-                            min_amount_paise, max_amount_paise, usable_amount_paise, restricted,
-                            recurring_day_of_month, timing_note)
-                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
-                        fact_id,
+                    # A very recent active fact with the same category, label, and
+                    # amount is treated as the same fact, not a second one — the
+                    # live failure this guards against: one stated expense turned
+                    # into two identical records a second apart, most plausibly the
+                    # model calling record_financial_fact twice for the same thing
+                    # within one turn. A short window (rapid re-statement of the
+                    # same value seconds apart is almost certainly a duplicate call,
+                    # not the person deliberately restating unchanged information)
+                    # rather than any real correction path, which already goes
+                    # through fact_id.
+                    duplicate = await connection.fetchrow(
+                        """SELECT id FROM riverline_finance_facts
+                           WHERE workspace_id=$1 AND category=$2 AND lower(label)=lower($3)
+                             AND amount_paise=$4 AND active=true
+                             AND created_at > now() - interval '8 seconds'
+                           ORDER BY created_at DESC LIMIT 1""",
                         workspace_id,
                         item.category,
                         item.label,
                         item.amount_rupees * 100,
-                        item.due_date,
-                        item.certainty,
-                        min_paise,
-                        max_paise,
-                        usable_paise,
-                        item.restricted,
-                        item.recurring_day_of_month,
-                        item.timing_note,
                     )
-                await connection.execute(
-                    "UPDATE riverline_finance_workspaces SET revision=revision+1, updated_at=now() WHERE id=$1",
-                    workspace_id,
-                )
+                    if duplicate:
+                        fact_id = duplicate["id"]
+                        mutated = False
+                    else:
+                        fact_id = uuid4()
+                        min_paise = (
+                            item.min_amount_rupees * 100
+                            if item.min_amount_rupees is not None
+                            else None
+                        )
+                        max_paise = (
+                            item.max_amount_rupees * 100
+                            if item.max_amount_rupees is not None
+                            else None
+                        )
+                        usable_paise = (
+                            item.usable_amount_rupees * 100
+                            if item.usable_amount_rupees is not None
+                            else None
+                        )
+                        await connection.execute(
+                            """INSERT INTO riverline_finance_facts
+                               (id, workspace_id, category, label, amount_paise, due_date, certainty,
+                                min_amount_paise, max_amount_paise, usable_amount_paise, restricted,
+                                recurring_day_of_month, timing_note)
+                               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
+                            fact_id,
+                            workspace_id,
+                            item.category,
+                            item.label,
+                            item.amount_rupees * 100,
+                            item.due_date,
+                            item.certainty,
+                            min_paise,
+                            max_paise,
+                            usable_paise,
+                            item.restricted,
+                            item.recurring_day_of_month,
+                            item.timing_note,
+                        )
+                if mutated:
+                    await connection.execute(
+                        "UPDATE riverline_finance_workspaces SET revision=revision+1, updated_at=now() WHERE id=$1",
+                        workspace_id,
+                    )
         logger.info("finance_fact_recorded category={} owner_present=true", item.category)
         workspace = await self.workspace(user_id)
         return workspace, fact_result(fact_id, persisted, resolved=resolved)

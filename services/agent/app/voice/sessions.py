@@ -70,6 +70,11 @@ class Session:
     # a financial-planning conversation. Bounded so a genuinely broken provider still
     # ends the call rather than limping along silently forever.
     recoverable_llm_errors: int = field(default=0, repr=False)
+    # The text of the most recent user turn, kept so a financial-fact mutation
+    # can be checked against what the person actually just said (an amount that
+    # doesn't appear anywhere in it, a date invented with no basis, a "paid"
+    # correction that doesn't name the thing being resolved) before it persists.
+    last_user_utterance: str = field(default="", repr=False)
 
     def state(self) -> VoiceState:
         return VoiceState(

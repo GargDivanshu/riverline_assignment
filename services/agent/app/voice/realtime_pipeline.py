@@ -165,6 +165,7 @@ async def run_realtime(session, settings: Settings) -> None:
             if message.role in {"user", "assistant"} and message.content.strip():
                 if message.role == "user":
                     session.user_transcript_received.set()
+                    session.last_user_utterance = message.content.strip()
                     stall_watchdog.on_user_turn()
                 await _trace(
                     session, "transcript", role=message.role, content=message.content.strip()

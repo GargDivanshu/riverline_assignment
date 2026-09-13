@@ -2,8 +2,8 @@
 
 import asyncio
 import time
-from datetime import datetime
-from uuid import uuid4
+from datetime import date, datetime
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -39,10 +39,15 @@ from app.errors import classify_voice_error, log_voice_error
 from app.finance import (
     FactNotFoundError,
     FinancialFactInput,
+    amount_matches_utterance,
+    date_is_evidenced,
+    find_fact_label,
     format_existing_facts,
+    resolution_target_check,
     shape_validation_errors,
     tool_snapshot,
 )
+from app.numbers import extract_rupee_amounts
 from app.voice.activity import VoiceActivityProcessor
 from app.voice.audio_received_signal import AudioReceivedSignal
 
@@ -114,6 +119,20 @@ number the person mentions into an interrogation: when the relationship is alrea
 what they said, record it and move on without asking. Not everything said in conversation is a
 fact to store — an example, a past figure, or an explanation of a number you already have is
 conversation, not new state, and does not need its own record_financial_fact call.
+Never populate an amount, date, or recurring day unless it comes from what the person actually
+said or from a fact already stored — never from an example in these instructions, a typical
+pattern (most cards are due around a certain time of month), or a resemblance to something a
+different person might have said. If a needed number or date was not actually stated, leave it
+out rather than filling it with a plausible-sounding guess; a missing field is always safer than
+an invented one. Before calling record_financial_fact, mentally check the amount you are about to
+send against the person's own last sentence — the system independently rejects a single amount
+that does not match what was said, and a date or recurring day with nothing behind it at all, so
+getting this wrong costs a turn, but never rely on that instead of getting it right yourself.
+When the person names one specific obligation as paid, settled, or resolved, resolve only that
+one fact — never resolve other recently mentioned facts along with it just because they were
+recorded around the same time; the system independently rejects a resolution that the person's
+own words don't clearly point to, or that could equally mean something else still active.
+
 Only call record_financial_fact when the person has stated something new or changed — a plain
 question, including one asking you to repeat or clarify what you already have, is answered from
 the snapshot you already hold and is never itself a reason to call the tool.
@@ -444,13 +463,85 @@ class ResponseStallWatchdog:
             )
 
 
+class _GroundingRejection(Exception):
+    """A tool call that is internally valid but unsupported by what was
+    actually said — a real number, a real fact_id, correctly shaped, but not
+    evidenced by the conversation. Deliberately its own exception type (not
+    ValueError/ValidationError) so it is handled before, and separately from,
+    schema validation: this is never about the shape of the data being wrong,
+    only about whether it should be trusted."""
+
+    def __init__(self, error_code: str, field: str, message: str, *, extra: dict | None = None):
+        super().__init__(message)
+        self.error_code = error_code
+        self.field = field
+        self.message = message
+        self.extra = extra or {}
+
+
+def _sanitize_args(arguments: dict) -> dict:
+    """Tool arguments, JSON-safe, for the trace — the only thing that lets a
+    broken call be diagnosed without reconstructing it from before/after
+    database state, which is how every bug this module now guards against had
+    to be found the first time."""
+    return {
+        key: (str(value) if isinstance(value, (UUID, date)) else value)
+        for key, value in arguments.items()
+    }
+
+
 async def _record_fact(params: FunctionCallParams, session) -> None:
+    arguments = dict(params.arguments)
+    arguments["operation_id"] = uuid4()
+    await _trace(
+        session,
+        "tool_requested",
+        role="tool",
+        metadata={"tool": "record_financial_fact", "arguments": _sanitize_args(arguments)},
+    )
     try:
-        arguments = dict(params.arguments)
-        arguments["operation_id"] = uuid4()
-        snapshot, fact = await session.finance_store.record(
-            session.owner, FinancialFactInput.model_validate(arguments)
-        )
+        item = FinancialFactInput.model_validate(arguments)
+
+        # Grounding: reject anything the tool call claims that what the person
+        # actually just said doesn't support, before it ever reaches the
+        # database. These three checks are the direct fix for three separate
+        # live failures — a corrupted amount, an invented date, and a "paid"
+        # correction that silently resolved four unrelated facts along with
+        # the one actually named — none of which were rejections at all
+        # before this, just wrong data saved as confirmed.
+        utterance = session.last_user_utterance
+        amount_problem = amount_matches_utterance(item, utterance)
+        if amount_problem:
+            raise _GroundingRejection(
+                "amount_transcript_mismatch",
+                "amount_rupees",
+                amount_problem,
+                extra={
+                    "proposed_amount_rupees": item.amount_rupees,
+                    "user_amount_rupees": extract_rupee_amounts(utterance),
+                },
+            )
+        if not date_is_evidenced(item, utterance):
+            raise _GroundingRejection(
+                "date_not_evidenced",
+                "due_date" if item.due_date is not None else "recurring_day_of_month",
+                "no date was mentioned in what was just said — do not invent one; "
+                "leave the date out unless the person actually stated it",
+            )
+        if item.resolved and item.fact_id:
+            snapshot_now = await session.finance_store.workspace(session.owner)
+            found = find_fact_label(snapshot_now, str(item.fact_id))
+            if found:
+                target_label, other_labels = found
+                resolution_problem = resolution_target_check(
+                    target_label, utterance, other_labels
+                )
+                if resolution_problem:
+                    raise _GroundingRejection(
+                        "resolution_not_evidenced", "fact_id", resolution_problem
+                    )
+
+        snapshot, fact = await session.finance_store.record(session.owner, item)
         logger.info(
             "voice_tool_succeeded session_id={} tool=record_financial_fact revision={}",
             session.id,
@@ -460,7 +551,12 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
             session,
             "tool_completed",
             role="tool",
-            metadata={"tool": "record_financial_fact", "revision": snapshot.revision},
+            metadata={
+                "tool": "record_financial_fact",
+                "revision_before": snapshot.revision - 1,
+                "revision_after": snapshot.revision,
+                "fact_id": fact["id"],
+            },
         )
         await params.result_callback(
             {
@@ -468,6 +564,31 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
                 "revision": snapshot.revision,
                 "fact": fact,
                 "workspace": _tool_snapshot(snapshot),
+            }
+        )
+    except _GroundingRejection as rejection:
+        logger.warning(
+            "voice_tool_rejected session_id={} tool=record_financial_fact error_code={} reason={}",
+            session.id,
+            rejection.error_code,
+            rejection.message,
+        )
+        await _trace(
+            session,
+            "tool_rejected",
+            role="tool",
+            metadata={
+                "tool": "record_financial_fact",
+                "error_code": rejection.error_code,
+                "message": rejection.message,
+            },
+        )
+        await params.result_callback(
+            {
+                "status": "rejected",
+                "error_code": rejection.error_code,
+                "errors": [{"field": rejection.field, "message": rejection.message}],
+                **rejection.extra,
             }
         )
     except FactNotFoundError:
@@ -708,6 +829,7 @@ async def run_cascade(session, settings: Settings) -> None:
             if message.role in {"user", "assistant"} and message.content.strip():
                 if message.role == "user":
                     session.user_transcript_received.set()
+                    session.last_user_utterance = message.content.strip()
                     stall_watchdog.on_user_turn()
                 await _trace(
                     session, "transcript", role=message.role, content=message.content.strip()
