@@ -211,9 +211,7 @@ regression test that encodes the original failing transcript.
 
 ## Decision journal
 
-[decision_journal.md](decision_journal.md) — written by hand, independently,
-per the assignment's rules. Nothing in this repository summarizes,
-paraphrases, or was used to draft it.
+[decision_journal.md](decision_journal.md) — written independently by me, in accordance with the assignment's journal rules.
 
 ## Demo video
 
