@@ -43,6 +43,7 @@ from app.finance import (
     date_is_evidenced,
     find_fact_label,
     format_existing_facts,
+    income_overlap_risk,
     resolution_target_check,
     shape_validation_errors,
     tool_snapshot,
@@ -77,6 +78,18 @@ leave it out. If instead they describe something that repeats every month on the
 use recurring_day_of_month with just the day number, and never ask which month or which year;
 "every month" already answers that. Call get_financial_snapshot before explaining a plan or
 resolving a correction.
+Before asking how much a specific client, job, or source pays, check whether an aggregate income
+range is already active. If one is, phrase the question to preserve that relationship instead of
+inviting a standalone number — ask whether it is already part of the range you have, or on top of
+it, rather than just "how much do they pay you"; a question that ignores existing state is how a
+real double-count happened. A new income fact you try to create can come back as
+needs_reconciliation instead of saving — nothing was rejected and nothing failed, it may already
+be covered by an existing range. If requires_clarifying_question is true, ask exactly one short
+question naming the existing range and the new amount, and do not call the tool again until it is
+answered. If it is false, the person's own words already made the relationship clear — simply
+acknowledge and move on without creating a new fact and without asking anything further.
+Conversational distance does not make two facts unrelated: a range stated many turns ago is still
+the same active fact whether or not it was just repeated.
 The tools calculate; do not do arithmetic yourself and only describe numbers returned by them.
 Every amount the tools return is already in whole rupees. Never mention a projected balance,
 shortfall, or any summary figure unless the person asked for the plan or you are explaining it
@@ -479,6 +492,17 @@ class _GroundingRejection(Exception):
         self.extra = extra or {}
 
 
+class _NeedsReconciliation(Exception):
+    """A candidate income fact is individually true but may double-count an
+    existing aggregate — distinct from every other outcome (not a validation
+    failure, not a success): nothing was rejected, a question needs
+    answering first. Carries the exact payload the model receives."""
+
+    def __init__(self, payload: dict):
+        super().__init__(payload["reason"])
+        self.payload = payload
+
+
 def _sanitize_args(arguments: dict) -> dict:
     """Tool arguments, JSON-safe, for the trace — the only thing that lets a
     broken call be diagnosed without reconstructing it from before/after
@@ -541,6 +565,13 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
                         "resolution_not_evidenced", "fact_id", resolution_problem
                     )
 
+        if item.fact_id is None and item.category == "income":
+            snapshot_now = await session.finance_store.workspace(session.owner)
+            recent_context = " ".join(session.recent_user_utterances)
+            risk = income_overlap_risk(item, snapshot_now.income, recent_context)
+            if risk:
+                raise _NeedsReconciliation(risk)
+
         snapshot, fact = await session.finance_store.record(session.owner, item)
         logger.info(
             "voice_tool_succeeded session_id={} tool=record_financial_fact revision={}",
@@ -566,6 +597,19 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
                 "workspace": _tool_snapshot(snapshot),
             }
         )
+    except _NeedsReconciliation as pending:
+        logger.info(
+            "voice_tool_needs_reconciliation session_id={} tool=record_financial_fact reason={}",
+            session.id,
+            pending.payload["reason"],
+        )
+        await _trace(
+            session,
+            "tool_needs_reconciliation",
+            role="tool",
+            metadata={"tool": "record_financial_fact", **pending.payload},
+        )
+        await params.result_callback(pending.payload)
     except _GroundingRejection as rejection:
         logger.warning(
             "voice_tool_rejected session_id={} tool=record_financial_fact error_code={} reason={}",
@@ -830,6 +874,8 @@ async def run_cascade(session, settings: Settings) -> None:
                 if message.role == "user":
                     session.user_transcript_received.set()
                     session.last_user_utterance = message.content.strip()
+                    session.recent_user_utterances.append(message.content.strip())
+                    del session.recent_user_utterances[:-6]
                     stall_watchdog.on_user_turn()
                 await _trace(
                     session, "transcript", role=message.role, content=message.content.strip()

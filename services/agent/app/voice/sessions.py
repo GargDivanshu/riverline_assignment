@@ -75,6 +75,15 @@ class Session:
     # doesn't appear anywhere in it, a date invented with no basis, a "paid"
     # correction that doesn't name the thing being resolved) before it persists.
     last_user_utterance: str = field(default="", repr=False)
+    # A short rolling window of recent user turns (not just the latest one).
+    # The single-turn field above is enough for "does this amount/date match
+    # what was just said", but a cross-fact check like income overlap needs
+    # more: a live call stated an aggregate income range, then many turns
+    # later — after the card, rent, subscriptions, and cash were all
+    # discussed — mentioned "two clients" and one client's specific payment,
+    # with nothing tying the two moments together in the single most recent
+    # turn alone.
+    recent_user_utterances: list[str] = field(default_factory=list, repr=False)
 
     def state(self) -> VoiceState:
         return VoiceState(

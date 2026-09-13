@@ -77,13 +77,14 @@ class FakeFinanceStore:
         return None
 
 
-def _session(store, utterance=""):
+def _session(store, utterance="", recent=None):
     return SimpleNamespace(
         id="session-1",
         owner="owner-1",
         finance_store=store,
         created_monotonic=time.monotonic(),
         last_user_utterance=utterance,
+        recent_user_utterances=recent if recent is not None else ([utterance] if utterance else []),
     )
 
 
@@ -265,6 +266,64 @@ def test_resolving_the_actually_named_fact_still_works():
         payload = resolve_captured["payload"]
         assert payload["status"] == "success"
         assert rent_id not in store._facts  # resolved facts are removed by the fake store
+
+    asyncio.run(scenario())
+
+
+def test_income_overlap_blocks_the_exact_live_double_count_end_to_end():
+    # The exact live failure through the real _record_fact code path: an
+    # aggregate income range is already active; several unrelated facts get
+    # recorded in between; the person then explains it comes from two
+    # clients and names one client's specific payment. The candidate must
+    # come back needs_reconciliation, not silently persist as new income.
+    async def scenario():
+        store = FakeFinanceStore()
+        session = _session(store)
+
+        range_params, _ = _params(
+            {
+                "category": "income",
+                "label": "Freelance income range",
+                "min_amount_rupees": 60_000,
+                "max_amount_rupees": 75_000,
+                "certainty": "estimated",
+            }
+        )
+        await _record_fact(range_params, session)
+
+        # Unrelated facts recorded in between, exactly as in the transcript.
+        for args, utterance in [
+            ({"category": "commitment", "label": "Credit card payment", "amount_rupees": 22_000, "recurring_day_of_month": 25, "certainty": "estimated"}, "the card is due on the 25th of every month"),
+            ({"category": "expense", "label": "Rent", "amount_rupees": 15_000, "certainty": "confirmed"}, "my rent is fifteen thousand"),
+            ({"category": "opening_cash", "label": "Savings balance", "amount_rupees": 18_000, "certainty": "confirmed"}, "I have eighteen thousand in savings"),
+        ]:
+            p, _ = _params(args)
+            session.last_user_utterance = utterance
+            session.recent_user_utterances.append(utterance)
+            await _record_fact(p, session)
+
+        session.recent_user_utterances.append(
+            "I told you about my freelance income, there are two clients actually, one is reliable"
+        )
+        session.last_user_utterance = "yes, thirty five thousand, by the 22nd"
+        session.recent_user_utterances.append(session.last_user_utterance)
+
+        client_params, client_captured = _params(
+            {
+                "category": "income",
+                "label": "Client payment expected",
+                "amount_rupees": 35_000,
+                "due_date": "2026-09-22",
+                "certainty": "estimated",
+            }
+        )
+        await _record_fact(client_params, session)
+        payload = client_captured["payload"]
+        assert payload["status"] == "needs_reconciliation"
+        assert payload["existing_range_rupees"] == [60_000, 75_000]
+        # Nothing new was persisted — only the original range fact exists.
+        income_facts = [f for f in store._facts.values() if f["category"] == "income"]
+        assert len(income_facts) == 1
 
     asyncio.run(scenario())
 

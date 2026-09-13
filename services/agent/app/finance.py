@@ -445,6 +445,83 @@ def resolution_target_check(
     return None
 
 
+_INCOME_ADDITIVE_PHRASES = (
+    "apart from", "in addition to", "additional", "additionally", "extra",
+    "on top of", "besides that", "also earn", "also get", "also make",
+    "separately",
+)
+_INCOME_COMPONENT_PHRASES = (
+    "out of that", "one of them", "one of those", "that includes",
+    "part of", "comes from", "included in", "one of my clients",
+    "one of the clients", "included already",
+)
+# A candidate that looks like a fixed, employer-style source is treated as
+# genuinely distinct from a variable/freelance-style aggregate even when its
+# amount happens to fall inside that aggregate's range — "my salary is
+# thirty thousand" should never be flagged just because thirty thousand also
+# fits inside an unrelated sixty-to-seventy-five-thousand freelance range.
+_DISTINCT_SOURCE_WORDS = {"salary", "salaried", "employer", "paycheck", "payroll"}
+
+
+def income_overlap_risk(
+    item: FinancialFactInput, active_income_facts: list[MoneyFact], recent_context: str
+) -> dict | None:
+    """None if a new income fact is safe to create outright; otherwise a
+    needs_reconciliation payload describing why it may double-count an
+    existing aggregate.
+
+    The failure this exists to fix: an aggregate income range (₹60k-75k) was
+    already active; many turns later — after several unrelated facts were
+    discussed in between — the person explained that range comes from two
+    clients and named one client's specific expected payment (₹35k by a
+    date). The individual tool call was entirely grounded (the amount and
+    date were both genuinely said), but it was still wrong: it created a
+    second, additive income fact on top of the range that almost certainly
+    already includes it. A prompt-only version of this rule already existed
+    and did not hold — get_financial_snapshot had already been called and
+    the range was sitting right there in context — so this runs the check
+    deterministically instead of relying on the model to apply it.
+
+    Deliberately narrow: only fires for a genuinely new income fact (never a
+    correction, which already has its own fact_id-scoped path), only against
+    an existing fact stated as a range (min/max), and only when the new
+    amount could plausibly fit inside that range at all.
+    """
+    if item.fact_id is not None or item.category != "income" or item.amount_rupees is None:
+        return None
+    lowered = recent_context.lower()
+    if any(phrase in lowered for phrase in _INCOME_ADDITIVE_PHRASES):
+        return None  # explicit additive language always wins, regardless of overlap
+    explicit_component = any(phrase in lowered for phrase in _INCOME_COMPONENT_PHRASES)
+    candidate_words = _keywords(recent_context) | _keywords(item.label)
+    for existing in active_income_facts:
+        if existing.min_amount_paise is None or existing.max_amount_paise is None:
+            continue  # only a stated range counts as an "aggregate" here
+        if item.amount_rupees * 100 > existing.max_amount_paise:
+            continue  # larger than the whole range — not plausibly a component of it
+        # Default assumption: a new income fact that could numerically fit
+        # inside an active variable/estimated range might be describing part
+        # of it, unless it clearly names a distinct, fixed-style source (a
+        # salary) that the aggregate itself isn't already about.
+        looks_distinct_source = bool(candidate_words & _DISTINCT_SOURCE_WORDS) and not bool(
+            _keywords(existing.label) & _DISTINCT_SOURCE_WORDS
+        )
+        if looks_distinct_source and not explicit_component:
+            continue
+        return {
+            "status": "needs_reconciliation",
+            "reason": "candidate_income_may_overlap_existing_aggregate",
+            "requires_clarifying_question": not explicit_component,
+            "candidate_amount_rupees": item.amount_rupees,
+            "existing_fact_id": existing.id,
+            "existing_range_rupees": [
+                existing.min_amount_paise // 100,
+                existing.max_amount_paise // 100,
+            ],
+        }
+    return None
+
+
 def find_fact_label(snapshot: Workspace, fact_id: str) -> tuple[str, list[str]] | None:
     """The target fact's own label and every other active fact's label, for
     resolution_target_check — or None if fact_id isn't an active fact (that
