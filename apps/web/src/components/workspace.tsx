@@ -1,10 +1,9 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDownLeft, ArrowRight, ArrowUpRight, AudioLines, CalendarDays, Check, ChevronDown, CircleHelp, CreditCard, FileText, LayoutDashboard, LoaderCircle, LogOut, Mic, MoreHorizontal, ShieldCheck, Wallet, type LucideIcon } from "lucide-react";
-import { motion } from "motion/react";
+import { ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronDown, CreditCard, FileText, ListChecks, LogOut, ShieldCheck, Wallet, Wallet2, type LucideIcon } from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
 import { Brand } from "./brand";
-import { VoiceOrb } from "./voice-orb";
 import { LiveConversation } from "./live-conversation";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
@@ -13,23 +12,25 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { authClient } from "@/lib/auth-client";
 import { trpc } from "@/lib/trpc-client";
 
-type Panel = "income" | "commitments" | "expenses" | "plan" | null;
-type Fact = { id: string; label: string; amount_paise?: number | null; due_date?: string | null };
+type Panel = "available" | "income" | "commitments" | "expenses" | "plan" | "trace" | null;
+type Fact = { id: string; label: string; amount_paise?: number | null; due_date?: string | null; recurring_day_of_month?: number | null; timing_note?: string | null; min_amount_paise?: number | null; max_amount_paise?: number | null; usable_amount_paise?: number | null; restricted?: boolean };
 type PlanEvent = { date: string; label: string; change_paise: number; balance_paise: number };
-type WorkspaceState = { income?: Fact[]; commitments?: Fact[]; expenses?: Fact[]; timeline?: PlanEvent[] };
+type WorkspaceState = { opening_cash?: Fact[]; income?: Fact[]; commitments?: Fact[]; expenses?: Fact[]; timeline?: PlanEvent[]; revision?: number; summary?: { first_shortfall_date?: string | null; projected_closing_paise?: number | null; conditional_closing_paise?: number | null } };
 type ConversationTrace = { status: string; mode: string; failure_code?: string | null; events?: Array<{ id: number; event_type: string; role?: string | null; content?: string | null; elapsed_ms?: number | null }> };
+
 const panels = {
-  income: { title: "Incoming money", description: "Salary, side earnings, or money someone owes you.", icon: ArrowDownLeft, empty: "Your income sources will appear here.", detail: "Amounts, arrival dates and uncertainty will stay separate, so expected money doesn’t get mistaken for money you already have." },
-  commitments: { title: "Loans & EMIs", description: "Loan EMIs, credit-card bills, BNPL, and money you owe people.", icon: CreditCard, empty: "No loans or EMIs added yet.", detail: "Each payment will have its own due date. Money owed to a friend or family member belongs here too." },
-  expenses: { title: "Everyday essentials", description: "The things you need to make room for.", icon: Wallet, empty: "Your everyday expenses will appear here.", detail: "You can keep an expense protected or choose to explore a change. Nothing is reduced without your agreement." },
-  plan: { title: "Your 30-day plan", description: "A practical schedule built around your money and priorities.", icon: CalendarDays, empty: "Your plan hasn’t started yet.", detail: "Once your conversation is connected, you’ll see dated next steps, any uncovered payments, and the numbers behind them." },
-};
+  available: { title: "Available now", description: "Cash and savings you can use today.", icon: Wallet2, empty: "Nothing recorded yet.", detail: "A savings cap or business cash you said is off-limits stays visible here, just excluded from the plan." },
+  income: { title: "Incoming money", description: "Salary, side earnings, or money someone owes you.", icon: ArrowUpRight, empty: "Nothing recorded yet.", detail: "Amounts, arrival dates and uncertainty stay separate, so expected money doesn't get mistaken for money you already have." },
+  commitments: { title: "Loans & EMIs", description: "Loan EMIs, credit-card bills, BNPL, and money you owe people.", icon: CreditCard, empty: "Nothing recorded yet.", detail: "Each payment has its own due date. Money owed to a friend or family member belongs here too." },
+  expenses: { title: "Everyday essentials", description: "The things you need to make room for.", icon: Wallet, empty: "Nothing recorded yet.", detail: "You can protect an expense or explore a change — nothing is reduced without your agreement." },
+  plan: { title: "Your 30-day plan", description: "A practical schedule built around your money and priorities.", icon: CalendarDays, empty: "Your plan hasn't started yet.", detail: "Once enough facts are in, you'll see dated next steps, any uncovered payments, and the numbers behind them." },
+  trace: { title: "Conversation trace", description: "What was said and done, in order.", icon: ListChecks, empty: "Nothing recorded yet.", detail: "Audio is not saved. Text turns, tool calls and timings are, so this stays inspectable." },
+} as const;
 
 export function WorkspaceView({ user }: { user: { name: string; email: string } }) {
   const router = useRouter();
   const [panel, setPanel] = useState<Panel>(null);
-  const [dialog, setDialog] = useState<"voice" | "privacy" | null>(null);
-  const [voiceMode, setVoiceMode] = useState<"new" | "returning">("returning");
+  const [dialog, setDialog] = useState<"privacy" | null>(null);
   const [voiceActive, setVoiceActive] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [accountError, setAccountError] = useState("");
@@ -38,37 +39,128 @@ export function WorkspaceView({ user }: { user: { name: string; email: string } 
   const trace = latestConversation.data as ConversationTrace | null | undefined;
   const firstName = user.name.split(" ")[0];
   const activePanel = panel ? panels[panel] : null;
-  const dateLabel = state.data ? `${formatDate(state.data.window_start)} – ${formatDate(previousDate(state.data.window_end_exclusive))}` : "Next 30 days";
+  const data = state.data as WorkspaceState | undefined;
+  const hasAnyFacts = Boolean(data && ((data.opening_cash?.length ?? 0) + (data.income?.length ?? 0) + (data.commitments?.length ?? 0) + (data.expenses?.length ?? 0) > 0));
+  const voiceMode = hasAnyFacts ? "returning" : "new";
+
   async function signOut() {
     setSigningOut(true); setAccountError("");
     try { const result = await authClient.signOut(); if (result.error) throw new Error(); router.push("/login"); router.refresh(); }
     catch { setAccountError("Sign-out failed. Please try again."); setSigningOut(false); }
   }
 
-  return <div className="workspace-shell">
-    <aside className="sidebar"><Brand /><div className="sidebar-body"><span className="nav-label">YOUR WORKSPACE</span><nav aria-label="Main navigation"><button className="nav-item active" aria-current="page"><LayoutDashboard size={18} />Overview</button><button className="nav-item" onClick={() => setPanel("plan")}><CalendarDays size={18} />Your plan</button><button className="nav-item" onClick={() => setPanel("commitments")}><Wallet size={18} />Money details</button></nav><div className="sidebar-note"><span className="sidebar-note-icon"><AudioLines size={20} /></span><h3>Start with what you know.</h3><p>You don’t need every number to take the first step.</p></div></div><button className="nav-item help-link" onClick={() => setDialog("privacy")}><CircleHelp size={18} />About your workspace<ArrowUpRight size={15} /></button><div className="sidebar-foot">A little more clarity.</div></aside>
-    <div className="workspace-body">
-      <header className="topbar"><div className="breadcrumb"><span className="mobile-brand"><Brand /></span><span className="desktop-crumb">Workspace <span>/</span> <strong>Overview</strong></span></div><div className="topbar-right"><span className="workspace-badge">Personal workspace</span><DropdownMenu><DropdownMenuTrigger asChild><button className="account-button" aria-label="Open account menu"><span className="avatar">{user.name.slice(0, 1).toUpperCase()}</span><span>{firstName}</span><ChevronDown size={15} /></button></DropdownMenuTrigger><DropdownMenuContent align="end" className="account-menu"><div className="account-info"><strong>{user.name}</strong><span>{user.email}</span></div><DropdownMenuItem onClick={() => setDialog("privacy")}><ShieldCheck size={16} />About your data</DropdownMenuItem><DropdownMenuItem onClick={signOut} disabled={signingOut}><LogOut size={16} />{signingOut ? "Signing out…" : "Sign out"}</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></header>
-      <main id="main-content" className="workspace-main">
-        <div className="page-heading"><div><span className="eyebrow">LET’S LOOK AHEAD</span><h1>A little clarity, {firstName}.</h1><p>Your money and your next steps, in one place.</p></div><div className="date-range"><CalendarDays size={16} />{dateLabel}</div></div>
-        {(state.error || accountError) && <div className="workspace-alert" role="alert"><span>{accountError || state.error?.message}</span>{state.error && <button onClick={() => state.refetch()}>Try again</button>}</div>}
-        <motion.section className="conversation-card" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}>
-          <div className="conversation-copy"><span className="section-kicker"><AudioLines size={16} /> YOUR CONVERSATION</span><h2>Let’s make a plan<br />for your next 30 days.</h2><p>Talk through what’s coming in, what’s due,<br className="desktop-break" /> and what matters to you. We’ll take it from there.</p><div className="conversation-actions"><Button className="primary-cta" onClick={() => { setVoiceMode("returning"); setDialog("voice"); }}><Mic size={17} />Start a conversation<ArrowRight size={17} /></Button><Button variant="outline" onClick={() => { setVoiceMode("new"); setDialog("voice"); }}>Start as a new person</Button><span>English · At your pace</span></div></div><div className="conversation-visual"><VoiceOrb /><span className="orb-caption">A clearer path starts here.</span></div>
-        </motion.section>
-        <div className="section-heading"><h2>Your money at a glance</h2><span>{state.isLoading ? <><LoaderCircle size={14} className="animate-spin" /> Loading workspace</> : voiceActive ? "Updating as you talk" : state.data?.revision ? `Updated from ${state.data.revision} saved fact${state.data.revision === 1 ? "" : "s"}` : "Details will build as you talk"}</span></div>
-        {(() => { const income = state.data?.income ?? []; const commitments = state.data?.commitments ?? []; const expenses = state.data?.expenses ?? []; if (!income.length && !commitments.length && !expenses.length) return null; const inTotal = income.reduce((sum, fact) => sum + (fact.amount_paise ?? 0), 0); const outTotal = [...commitments, ...expenses].reduce((sum, fact) => sum + (fact.amount_paise ?? 0), 0); const net = inTotal - outTotal; return <div className="cashflow-summary"><div className="cashflow-stat"><span>Money in this month</span><strong>{formatInr(inTotal)}</strong></div><div className="cashflow-stat"><span>Money out this month</span><strong>{formatInr(outTotal)}</strong></div><div className={`cashflow-stat cashflow-net ${net >= 0 ? "positive" : "negative"}`}><span>Net this month</span><strong>{formatInr(net)}</strong></div></div>; })()}
-        <div className="money-grid">{(["income", "commitments", "expenses"] as const).map((key, index) => { const item = panels[key]; const Icon = item.icon; const facts = key === "income" ? state.data?.income ?? [] : key === "commitments" ? state.data?.commitments ?? [] : state.data?.expenses ?? []; const total = facts.reduce((sum, fact) => sum + (fact.amount_paise ?? 0), 0); return <motion.button key={key} className="money-card" onClick={() => setPanel(key)} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.06 * index, duration: 0.3 }}><div className="money-card-top"><span className={`metric-icon metric-${key}`}><Icon size={20} /></span><ArrowUpRight size={17} className="card-arrow" /></div><h3>{item.title}</h3><span className={facts.length ? "card-amount" : "empty-amount"}>{facts.length ? formatInr(total) : "—"}</span><div className="money-card-footer"><span>{facts.length ? `${facts.length} saved ${facts.length === 1 ? "item" : "items"}` : key === "income" ? "No income added yet" : key === "commitments" ? "No loans or EMIs added yet" : "No expenses added yet"}</span><span className="small-plus">+</span></div></motion.button>; })}</div>
-        <section className="plan-card"><div className="plan-heading"><div><span className="section-kicker"><AudioLines size={16} /> CONVERSATION TRACE</span><h2>{trace ? `Last call: ${trace.status}` : "Your next call will be traceable."}</h2></div><button className="icon-button" aria-label="Refresh conversation trace" onClick={() => latestConversation.refetch()}><MoreHorizontal size={21} /></button></div><div className="plan-placeholder"><div className="plan-placeholder-icon"><AudioLines size={24} /></div><div>{trace?.events?.length ? <><h3>{trace.events.length} recorded events · {trace.mode} flow.</h3><p>{trace.events.slice(-2).map(event => event.content ? `${event.role}: ${event.content}` : event.event_type).join(" · ")}</p>{trace.failure_code && <p>Failure: {trace.failure_code}</p>}</> : <><h3>Text turns and timings will appear here.</h3><p>Audio is not recorded. The transcript, tool activity, joins, failures, and elapsed times are saved locally.</p></>}</div><Button variant="outline" onClick={() => latestConversation.refetch()}>Refresh trace<ArrowRight size={16} /></Button></div></section>
-        <section className="plan-card"><div className="plan-heading"><div><span className="section-kicker"><CalendarDays size={16} /> YOUR 30-DAY PLAN</span><h2>{state.data?.plan_status === "ready" ? "Your current 30-day view." : "One step at a time."}</h2></div><button className="icon-button" aria-label="View plan details" onClick={() => setPanel("plan")}><MoreHorizontal size={21} /></button></div><div className="plan-placeholder"><div className="plan-placeholder-icon"><FileText size={24} /></div><div>{state.data?.summary?.first_shortfall_date ? <><h3>There may be a shortfall on {formatDate(state.data.summary.first_shortfall_date)}.</h3><p>Keep adding dates or amounts to make this projection more complete.</p></> : state.data?.summary?.projected_closing_paise !== null && state.data?.summary?.projected_closing_paise !== undefined ? <><h3>Projected 30-day balance: {formatInr(state.data.summary.projected_closing_paise)}.</h3><p>This uses only the dated facts you have confirmed.</p></> : <><h3>Your next steps will live here.</h3><p>Add what is coming in, what is due, and money available now.</p></>}</div><Button variant="outline" onClick={() => setPanel("plan")}>Explore your plan<ArrowRight size={16} /></Button></div><div className="plan-footer"><ShieldCheck size={15} /><span>Your priorities come first. Changes are always your choice.</span></div></section>
-        <footer className="workspace-footer"><span>Built around your real life.</span><button onClick={() => setDialog("privacy")}>About your data<ArrowUpRight size={13} /></button></footer>
-      </main>
-    </div>
-    <Sheet open={Boolean(panel)} onOpenChange={open => { if (!open) setPanel(null); }}><SheetContent className="detail-sheet">{activePanel && <><SheetHeader><SheetTitle>{activePanel.title}</SheetTitle><SheetDescription>{activePanel.description}</SheetDescription></SheetHeader><FactList panel={panel} data={state.data} empty={activePanel.empty} detail={activePanel.detail} Icon={activePanel.icon} /></>}</SheetContent></Sheet>
-    <Dialog open={Boolean(dialog)} onOpenChange={open => { if (!open && !voiceActive) setDialog(null); }}><DialogContent className="info-dialog"><DialogHeader><DialogTitle>{dialog === "voice" ? voiceMode === "new" ? "Your first conversation." : "Your live conversation." : "Your information, your choices."}</DialogTitle><DialogDescription>{dialog === "voice" ? voiceMode === "new" ? "Riverline will start with a short first-time orientation." : "Speak naturally, pause, and correct yourself whenever you need." : "Financial facts are saved in this local workspace. No bank accounts are connected."}</DialogDescription></DialogHeader>{dialog === "voice" && <LiveConversation onActiveChange={setVoiceActive} mode={voiceMode} />}<div className="dialog-points">{(dialog === "voice" ? [] : ["No bank accounts are connected", "The app does not save audio recordings", "Google sign-in is optional when available"]).map(text => <div key={text}><Check size={16} /><span>{text}</span></div>)}</div><Button disabled={voiceActive} onClick={() => setDialog(null)}>{voiceActive ? "End the conversation before leaving" : "Back to workspace"}</Button></DialogContent></Dialog>
+  return <div className="app-shell">
+    <header className="app-topbar">
+      <Brand />
+      <div className="topbar-right">
+        <button className="text-link" onClick={() => setPanel("trace")}>View conversation</button>
+        <DropdownMenu><DropdownMenuTrigger asChild><button className="account-button" aria-label="Open account menu"><span className="avatar">{user.name.slice(0, 1).toUpperCase()}</span><ChevronDown size={15} /></button></DropdownMenuTrigger><DropdownMenuContent align="end" className="account-menu"><div className="account-info"><strong>{user.name}</strong><span>{user.email}</span></div><DropdownMenuItem onClick={() => setDialog("privacy")}><ShieldCheck size={16} />About your data</DropdownMenuItem><DropdownMenuItem onClick={signOut} disabled={signingOut}><LogOut size={16} />{signingOut ? "Signing out…" : "Sign out"}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+      </div>
+    </header>
+    {(state.error || accountError) && <div className="workspace-alert" role="alert"><span>{accountError || state.error?.message}</span>{state.error && <button onClick={() => state.refetch()}>Try again</button>}</div>}
+    <main className="app-main">
+      <section className="voice-column">
+        <p className="voice-greeting">Hi {firstName} — let&apos;s look at your next 30 days.</p>
+        <LiveConversation onActiveChange={setVoiceActive} mode={voiceMode} />
+      </section>
+      <section className="cards-column">
+        <CashflowStrip data={data} />
+        <div className="money-grid">
+          {(["available", "income", "commitments", "expenses"] as const).map(key => <MoneyCard key={key} panelKey={key} data={data} onOpen={() => setPanel(key)} />)}
+        </div>
+        <PlanPreview data={data} onOpen={() => setPanel("plan")} />
+      </section>
+    </main>
+    <Sheet open={Boolean(panel)} onOpenChange={open => { if (!open) setPanel(null); }}><SheetContent className="detail-sheet">{activePanel && <><SheetHeader><SheetTitle>{activePanel.title}</SheetTitle><SheetDescription>{activePanel.description}</SheetDescription></SheetHeader>{panel === "trace" ? <TraceList trace={trace} /> : <FactList panel={panel} data={data} empty={activePanel.empty} detail={activePanel.detail} Icon={activePanel.icon} />}</>}</SheetContent></Sheet>
+    <Dialog open={dialog === "privacy"} onOpenChange={open => { if (!open) setDialog(null); }}><DialogContent className="info-dialog"><DialogHeader><DialogTitle>Your information, your choices.</DialogTitle><DialogDescription>Financial facts are saved in this local workspace. No bank accounts are connected.</DialogDescription></DialogHeader><div className="dialog-points">{["No bank accounts are connected", "The app does not save audio recordings", "Google sign-in is optional when available"].map(text => <div key={text}><Check size={16} /><span>{text}</span></div>)}</div><Button onClick={() => setDialog(null)}>Back to workspace</Button></DialogContent></Dialog>
   </div>;
 }
 
 function formatDate(value: string) { return new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`)); }
-function previousDate(value: string) { const date = new Date(`${value}T00:00:00Z`); date.setUTCDate(date.getUTCDate() - 1); return date.toISOString().slice(0, 10); }
 function formatInr(paise: number) { return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(paise / 100); }
-function FactList({ panel, data, empty, detail, Icon }: { panel: Panel; data: WorkspaceState | undefined; empty: string; detail: string; Icon: LucideIcon }) { const facts: Array<Fact | PlanEvent> = panel === "income" ? data?.income ?? [] : panel === "commitments" ? data?.commitments ?? [] : panel === "expenses" ? data?.expenses ?? [] : data?.timeline ?? []; if (!facts.length) return <div className="sheet-empty"><Icon size={30} /><h3>{empty}</h3><p>{detail}</p></div>; return <div className="sheet-empty">{facts.map(fact => <div key={"id" in fact ? fact.id : `${fact.date}-${fact.label}`} className="flex w-full items-center justify-between gap-3 border-b py-3 text-left"><div><strong>{fact.label}</strong><p>{"due_date" in fact && fact.due_date ? formatDate(fact.due_date) : "date" in fact ? formatDate(fact.date) : "Date to confirm"}</p></div><strong>{formatInr(Math.abs("change_paise" in fact ? fact.change_paise : fact.amount_paise ?? 0))}</strong></div>)}</div>; }
+
+function factsFor(key: "available" | "income" | "commitments" | "expenses", data: WorkspaceState | undefined): Fact[] {
+  if (key === "available") return data?.opening_cash ?? [];
+  if (key === "income") return data?.income ?? [];
+  if (key === "commitments") return data?.commitments ?? [];
+  return data?.expenses ?? [];
+}
+
+function CashflowStrip({ data }: { data: WorkspaceState | undefined }) {
+  const income = data?.income ?? [];
+  const outgoing = [...(data?.commitments ?? []), ...(data?.expenses ?? [])];
+  if (!income.length && !outgoing.length) return null;
+  const inTotal = income.reduce((sum, fact) => sum + (fact.amount_paise ?? 0), 0);
+  const outTotal = outgoing.reduce((sum, fact) => sum + (fact.amount_paise ?? 0), 0);
+  const net = inTotal - outTotal;
+  return <motion.div className="cashflow-summary" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
+    <div className="cashflow-stat"><span>Money in</span><strong>{formatInr(inTotal)}</strong></div>
+    <div className="cashflow-stat"><span>Money out</span><strong>{formatInr(outTotal)}</strong></div>
+    <div className={`cashflow-stat cashflow-net ${net >= 0 ? "positive" : "negative"}`}><span>Net</span><strong>{formatInr(net)}</strong></div>
+  </motion.div>;
+}
+
+function MoneyCard({ panelKey, data, onOpen }: { panelKey: "available" | "income" | "commitments" | "expenses"; data: WorkspaceState | undefined; onOpen: () => void }) {
+  const item = panels[panelKey];
+  const Icon = item.icon;
+  const facts = factsFor(panelKey, data);
+  const usable = facts.reduce((sum, fact) => sum + (fact.restricted ? 0 : (fact.usable_amount_paise ?? fact.amount_paise ?? 0)), 0);
+  const restrictedCount = facts.filter(fact => fact.restricted).length;
+  return <motion.button className="money-card" onClick={onOpen} layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
+    <div className="money-card-top"><span className="metric-icon"><Icon size={18} /></span><ArrowUpRight size={16} className="card-arrow" /></div>
+    <h3>{item.title}</h3>
+    <span className={facts.length ? "card-amount" : "empty-amount"}>{facts.length ? formatInr(usable) : "—"}</span>
+    <div className="money-card-footer">
+      <span>{facts.length ? `${facts.length} saved ${facts.length === 1 ? "item" : "items"}${restrictedCount ? ` · ${restrictedCount} restricted` : ""}` : "Nothing yet"}</span>
+      <span className="small-plus">+</span>
+    </div>
+  </motion.button>;
+}
+
+function PlanPreview({ data, onOpen }: { data: WorkspaceState | undefined; onOpen: () => void }) {
+  const summary = data?.summary;
+  const headline = summary?.first_shortfall_date
+    ? `A shortfall may land around ${formatDate(summary.first_shortfall_date)}.`
+    : summary?.projected_closing_paise != null
+      ? `Projected 30-day balance: ${formatInr(summary.projected_closing_paise)}.`
+      : "Your plan will build as you talk.";
+  return <motion.button className="plan-preview" onClick={onOpen} layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, delay: 0.05 }}>
+    <div className="plan-preview-icon"><FileText size={18} /></div>
+    <div><h3>{headline}</h3><p>See the full 30-day view</p></div>
+    <ArrowRight size={16} />
+  </motion.button>;
+}
+
+function FactList({ panel, data, empty, detail, Icon }: { panel: Panel; data: WorkspaceState | undefined; empty: string; detail: string; Icon: LucideIcon }) {
+  const facts: Array<Fact | PlanEvent> = panel === "plan" ? data?.timeline ?? [] : panel && panel !== "trace" ? factsFor(panel, data) : [];
+  if (!facts.length) return <div className="sheet-empty"><Icon size={30} /><h3>{empty}</h3><p>{detail}</p></div>;
+  return <div className="sheet-list">
+    <AnimatePresence initial={false}>
+      {facts.map(fact => {
+        const key = "id" in fact ? fact.id : `${fact.date}-${fact.label}`;
+        const amount = "change_paise" in fact ? fact.change_paise : fact.amount_paise ?? 0;
+        const isRange = "min_amount_paise" in fact && fact.min_amount_paise != null && fact.max_amount_paise != null;
+        return <motion.div key={key} layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="sheet-row">
+          <div>
+            <strong>{fact.label}</strong>
+            <p>{"recurring_day_of_month" in fact && fact.recurring_day_of_month ? `Every month on day ${fact.recurring_day_of_month}` : "due_date" in fact && fact.due_date ? formatDate(fact.due_date) : "date" in fact ? formatDate(fact.date) : "Date to confirm"}{"timing_note" in fact && fact.timing_note ? ` · ${fact.timing_note}` : ""}</p>
+            {"restricted" in fact && fact.restricted && <span className="fact-badge restricted">Restricted</span>}
+            {"usable_amount_paise" in fact && fact.usable_amount_paise != null && !fact.restricted && <span className="fact-badge capped">Usable cap {formatInr(fact.usable_amount_paise)}</span>}
+          </div>
+          <strong>{isRange && "min_amount_paise" in fact ? `${formatInr(fact.min_amount_paise!)}–${formatInr(fact.max_amount_paise!)}` : formatInr(Math.abs(amount))}</strong>
+        </motion.div>;
+      })}
+    </AnimatePresence>
+  </div>;
+}
+
+function TraceList({ trace }: { trace: ConversationTrace | null | undefined }) {
+  if (!trace?.events?.length) return <div className="sheet-empty"><ListChecks size={30} /><h3>Nothing recorded yet.</h3><p>Your next call&apos;s turns and tool calls will appear here.</p></div>;
+  return <div className="sheet-list">
+    {trace.events.map(event => <div key={event.id} className="sheet-row trace-row">
+      <div><strong>{event.role ?? event.event_type}</strong><p>{event.content ?? event.event_type}</p></div>
+      {event.elapsed_ms != null && <span className="trace-time">{(event.elapsed_ms / 1000).toFixed(1)}s</span>}
+    </div>)}
+    {trace.failure_code && <p className="voice-error">Failure: {trace.failure_code}</p>}
+  </div>;
+}

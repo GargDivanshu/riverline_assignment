@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DailyCall } from "@daily-co/daily-js";
-import { AudioLines, LoaderCircle, Mic, MicOff, PhoneOff, Sparkles, Volume2 } from "lucide-react";
+import { LoaderCircle, Mic, MicOff, PhoneOff, Volume2 } from "lucide-react";
 import { trpc } from "@/lib/trpc-client";
 import { Button } from "./ui/button";
+import { VoiceOrb } from "./voice-orb";
 
 export function LiveConversation({ onActiveChange, mode = "returning" }: { onActiveChange: (active: boolean) => void; mode?: "new" | "returning" }) {
   const [phase, setPhase] = useState<"idle" | "starting" | "connected" | "ending">("idle");
@@ -12,9 +13,6 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
   const [error, setError] = useState("");
   const [muted, setMuted] = useState(false);
   const [audioBlocked, setAudioBlocked] = useState(false);
-  // Temporary diagnostic for the open microphone-delivery investigation. Remove once
-  // a user transcript is confirmed reaching the server from this client build.
-  const [micDiagnostic, setMicDiagnostic] = useState("");
   const call = useRef<DailyCall | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const busy = useRef(false);
@@ -106,23 +104,11 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       });
       call.current = current;
       current.on("track-started", event => {
-        if (event?.track.kind !== "audio") return;
-        if (event.participant?.local) {
-          const readyState = event.track.readyState;
-          const muted = event.track.muted;
-          console.info("[mic-diagnostic] local audio track-started", { readyState, muted });
-          setMicDiagnostic(`local track started: readyState=${readyState} muted=${muted}`);
-          return;
-        }
+        if (event?.participant?.local || event?.track.kind !== "audio") return;
         if (audio.current) {
           audio.current.srcObject = new MediaStream([event.track]);
           void audio.current.play().catch(() => setAudioBlocked(true));
         }
-      });
-      current.on("track-stopped", event => {
-        if (event?.track.kind !== "audio" || !event.participant?.local) return;
-        console.info("[mic-diagnostic] local audio track-stopped");
-        setMicDiagnostic("local track stopped");
       });
       current.on("error", () => {
         setError("The audio connection failed. Ending the call safely.");
@@ -131,17 +117,6 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
       await current.join({ url: connection.room_url, token: connection.token, userName: "You" });
       if (cancelled.current) throw new Error("Closed");
       setPhase("connected");
-      // Daily's own account of the local track a few seconds after join. This is the
-      // single fact every prior fix attempt was missing: whether the browser ever
-      // handed Daily a live, unmuted microphone track at all.
-      setTimeout(() => {
-        if (cancelled.current || !call.current) return;
-        const local = call.current.participants?.().local;
-        const audioState = local?.tracks?.audio;
-        const summary = `mic state=${audioState?.state ?? "unknown"} off=${audioState?.off?.byUser ?? "n/a"} subscribed=${String(audioState?.subscribed)}`;
-        console.info("[mic-diagnostic] post-join local audio state", audioState);
-        setMicDiagnostic(previous => previous ? `${previous} | ${summary}` : summary);
-      }, 3000);
       joinTimeout.current = setTimeout(() => {
         if (agentSpoke.current) return;
         setError("Riverline could not begin this call. Ending it safely — please try again.");
@@ -163,28 +138,34 @@ export function LiveConversation({ onActiveChange, mode = "returning" }: { onAct
 
   const stopped = state.data?.status === "failed" || state.data?.status === "ended";
   const activity = state.data?.activity;
-  const status = phase === "idle" ? "Ready when you are" : phase === "starting" ? "Setting up a private call" : phase === "ending" ? "Ending your conversation" : activity === "speaking" ? "Riverline is speaking" : activity === "listening" ? "Your turn — Riverline is listening" : "Riverline is getting ready";
-  return <div className="live-conversation">
-    <div className={`voice-stage phase-${phase} ${activity === "speaking" ? "is-speaking" : ""}`}>
-      <div className="voice-pulse" aria-hidden="true"><div><Sparkles size={24} /></div></div>
-      <div className="voice-stage-copy">
-        <span className="voice-status"><span className="voice-status-icon">{phase === "starting" || phase === "ending" ? <LoaderCircle size={15} className="animate-spin" /> : activity === "speaking" ? <Volume2 size={15} /> : <AudioLines size={15} />}</span>{status}</span>
-        <p>{phase === "connected" && activity !== "speaking" && activity !== "listening" ? "This should take only a few seconds." : activity === "speaking" ? "You can interrupt whenever you need." : activity === "listening" ? "Speak naturally; pauses and corrections are okay." : "Your audio stays live only for this call."}</p>
-      </div>
+  const status = phase === "idle" ? (mode === "new" ? "Tap to start" : "Ready when you are") : phase === "starting" ? "Connecting…" : phase === "ending" ? "Ending…" : activity === "speaking" ? "Riverline is speaking" : activity === "listening" ? "Listening" : "One moment…";
+  const hint = phase === "idle" ? "No typing needed — just speak once you start." : activity === "speaking" ? "You can interrupt any time." : activity === "listening" ? "Speak naturally; pauses are fine." : phase === "connected" ? "Getting ready to reply…" : "";
+
+  return <div className="voice-hero">
+    <button
+      type="button"
+      className={`orb-stage phase-${phase} activity-${activity ?? "none"}`}
+      onClick={phase === "idle" ? connect : undefined}
+      disabled={phase !== "idle"}
+      aria-label={phase === "idle" ? "Start live conversation" : status}
+    >
+      <VoiceOrb speaking={activity === "speaking"} listening={activity === "listening"} />
+      {phase === "idle" && <span className="orb-cta"><Mic size={20} />Start talking</span>}
+    </button>
+    <div className="voice-status-line">
+      <span className="voice-status">{(phase === "starting" || phase === "ending") && <LoaderCircle size={14} className="animate-spin" />}{status}</span>
+      {hint && <p>{hint}</p>}
     </div>
     {(error || state.data?.error || state.error) && <p className="voice-error" role="alert">{error || state.data?.error || "Connection status unavailable. End the call and try again."}{state.data?.error_code && <small> Reference: {state.data.error_code}</small>}</p>}
-    {micDiagnostic && <p style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.7 }}>{micDiagnostic}</p>}
     <audio ref={audio} autoPlay aria-label="Agent audio" />
-    <div className="flex flex-wrap gap-3">
-      {phase === "idle" ? <Button onClick={connect}><Mic size={16} />Start live conversation</Button> : <>
-        <Button variant="outline" disabled={phase !== "connected" || stopped} onClick={() => {
-          call.current?.setLocalAudio(muted); setMuted(!muted);
-        }}>{muted ? <MicOff size={16} /> : <Mic size={16} />}{muted ? "Unmute" : "Mute"}</Button>
-        <Button variant="destructive" disabled={phase !== "connected"} onClick={disconnect}><PhoneOff size={16} />End conversation</Button>
-      </>}
-      {audioBlocked && <Button variant="outline" onClick={() => void audio.current?.play().then(() => setAudioBlocked(false)).catch(() => undefined)}><Volume2 size={16} />Enable agent audio</Button>}
-    </div>
-    <p className="voice-disclosure">English voice is processed by Daily, ElevenLabs and OpenRouter. Recordings are not saved; context ends with this call.</p>
+    {phase !== "idle" && <div className="voice-controls">
+      <Button variant="outline" disabled={phase !== "connected" || stopped} onClick={() => {
+        call.current?.setLocalAudio(muted); setMuted(!muted);
+      }}>{muted ? <MicOff size={16} /> : <Mic size={16} />}{muted ? "Unmute" : "Mute"}</Button>
+      <Button variant="destructive" disabled={phase !== "connected"} onClick={disconnect}><PhoneOff size={16} />End</Button>
+    </div>}
+    {audioBlocked && <Button variant="outline" onClick={() => void audio.current?.play().then(() => setAudioBlocked(false)).catch(() => undefined)}><Volume2 size={16} />Enable agent audio</Button>}
+    <p className="voice-disclosure">Voice is processed in real time and not recorded; conversation context ends with this call.</p>
   </div>;
 }
 

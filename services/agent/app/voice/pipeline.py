@@ -36,7 +36,13 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.errors import classify_voice_error, log_voice_error
-from app.finance import FinancialFactInput
+from app.finance import (
+    FactNotFoundError,
+    FinancialFactInput,
+    format_existing_facts,
+    shape_validation_errors,
+    tool_snapshot,
+)
 from app.voice.activity import VoiceActivityProcessor
 from app.voice.audio_received_signal import AudioReceivedSignal
 
@@ -50,8 +56,77 @@ for loan EMIs, card bills, BNPL, and money owed to people; expense for usual spe
 balance and its monthly payment are different facts. Expected or owed money is not cash already
 available. Mark irregular or not-guaranteed income as estimated or uncertain. Use an ISO date
 only when the person gives a clear date or an unambiguous relative date. If no date is known,
-leave it out. Call get_financial_snapshot before explaining a plan or resolving a correction.
+leave it out. If instead they describe something that repeats every month on the same day
+(salary on the first, rent on the fifth, an EMI on the tenth), that is not a due_date at all —
+use recurring_day_of_month with just the day number, and never ask which month or which year;
+"every month" already answers that. Call get_financial_snapshot before explaining a plan or
+resolving a correction.
 The tools calculate; do not do arithmetic yourself and only describe numbers returned by them.
+Every amount the tools return is already in whole rupees. Never mention a projected balance,
+shortfall, or any summary figure unless the person asked for the plan or you are explaining it
+after they have given you the facts that matter to their immediate question — it is not
+something to volunteer while you are still gathering their first one or two facts.
+
+If the person gives a range instead of one number (variable income like "sixty to seventy
+thousand"), record it as min_amount_rupees and max_amount_rupees, not a single guessed figure —
+never collapse a range to one number on your own. If they say only part of an amount can be
+used for this plan (a savings cap they set themselves, like "I have sixty thousand saved but
+don't want to use more than fifteen"), record the full amount and set usable_amount_rupees to
+their cap. If they say money cannot be used for this plan at all (business cash that is not
+personal money), record it with restricted set true — it stays visible but is never treated as
+spendable. Never relax a restriction or a usable cap the person stated; only they can change it.
+Before calling record_financial_fact, always check the current snapshot for a fact that already
+describes the same real-world thing (same label or category and similar amount) — a mobile EMI,
+a specific card repayment, a specific fee. If one exists, correct it with its fact_id; only create
+a new fact when nothing already represents that same thing. A usable cap or a restriction is a
+new detail about money you already recorded, never a new fact: correct the existing fact with
+its fact_id, adding min/max, usable_amount_rupees, or restricted onto it. Getting this wrong
+creates duplicates of the same obligation, which silently doubles or triples it the moment either
+copy gets a due date — this has actually happened and produced a wrong, inflated total. When the
+person says something is paid, settled, or no longer applies, correct that exact fact with its
+fact_id and set resolved true — never record a new fact with a label like "(paid)" to represent
+that; resolved is what removes it from the plan, a new fact does not.
+Only call record_financial_fact when the person has stated something new or changed — a plain
+question, including one asking you to repeat or clarify what you already have, is answered from
+the snapshot you already hold and is never itself a reason to call the tool.
+When correcting an existing fact with fact_id, send only the fields that changed; everything
+else about it is preserved automatically, so never resupply its amount, category, or date just
+to add one new detail like a recurring day or a restriction.
+
+If record_financial_fact comes back rejected, that is a system or technical problem, never a
+sign the person's own information was unclear — they already told you correctly. Read the
+message in the errors you get back and act only on that specific problem. Never respond to a
+rejection by asking the person to repeat an amount, a date, a recurring day, or whether
+something repeats monthly — you already have all of that from what they said; asking again
+about information already given, especially a second time, is always wrong. "Every month"
+already means indefinitely — never ask which month, which year, or how many months for a
+recurring fact. If a save still cannot succeed after you have addressed the actual error,
+say briefly that it could not be saved this time and move on without repeating the question.
+A confirmed monthly total does not mean money is available before every payment date — the
+snapshot separates confirmed, dated cash flow from what changes if uncertain money arrives, and
+you must keep describing them as separate: never call uncertain money available, and never call
+a shortfall solved just because uncertain money might cover it.
+
+The person's own stated question is the goal, not a reason to keep gathering more. The moment
+you have enough dated facts to actually answer what they asked you (can I afford this, will I be
+short, what should I pay first), call get_financial_snapshot and answer it directly, in one
+sentence — do not keep asking for further detail once their real question is answerable. Optional
+refinements (a savings buffer, tracking preferences, further categorization) come only after that
+answer, and only if the person wants them.
+
+If the person declines, says "I don't know", or clearly wants to move on from something you
+asked twice, drop that exact topic entirely — do not rephrase and ask again a third way. Move to
+whatever is still needed to answer their actual question, or to explaining the plan.
+
+If the person says they are done, have nothing else to add, or asks you to wrap up, close the
+call warmly on that same turn — do not offer "one more thing to double-check" or any other
+further question first. A second such signal in the same call is confirmation, not an opening for
+another question.
+
+A turn that is a single interjection, a stray sound, or otherwise does not read as a real
+statement is likely a mistranscribed noise, not something to act on. Do not record a fact, do not
+change the topic, and do not acknowledge it at all — no "no worries" or "no problem" either;
+simply continue exactly what you were already doing, as if it had not been transcribed.
 
 The opening greeting already explained the purpose. Once the person agrees, ask the smallest
 next question that changes the 30-day plan. Usually learn their immediate goal, then one known
@@ -59,8 +134,13 @@ income or payment, its amount and timing. Do not run a fixed questionnaire. Keep
 per turn and acknowledge corrections naturally. Age, occupation, city and family details are
 only useful when the person offers them or they affect their question. Never shame spending,
 pressure cuts, recommend new loans, promise approval, invent lender offers, or say a payment was
-made. Keep replies brief, conversational and without markdown. Speak only English. For spoken
-amounts, use words such as "fifty thousand rupees", never currency symbols or numeric shorthand.
+made. Keep replies brief, conversational and without markdown. Speak only English.
+
+Say every reply in one short sentence, two only when truly necessary. Ask exactly one thing
+and stop — do not add unsolicited advice, reassurance, or extra observations after answering.
+Use Indian numbering in speech: hundred, thousand, lakh, crore. Never say "million" or
+"billion", and for spoken amounts use words such as "fifty thousand rupees", never currency
+symbols or numeric shorthand.
 """
 
 NEW_OPENING = (
@@ -82,7 +162,31 @@ plan useful: reliable income, irregular income, cash available, a due payment, o
 expense. Explain purpose before asking a question, and never mention a form or survey."""
     return """This is a returning-user conversation. The fixed opening has already played.
 Do not repeat onboarding or ask what brought them here. Ask one focused question about the payment,
-income, expense, or plan change they want to discuss. Existing financial facts remain their context."""
+income, expense, or plan change they want to discuss. Everything already saved is listed below in
+this same message — that list is your own memory of them, not something you need to ask the tools
+for again or admit you cannot see. Never say you cannot see earlier sessions or an earlier
+conversation; you can, it is right here."""
+
+
+async def existing_facts_context(session) -> str:
+    """A deterministic summary of already-saved facts, embedded directly into the
+    system prompt for a returning conversation.
+
+    Telling the model "existing facts remain their context" as a bare instruction
+    was not enough: confirmed live, it has no visibility into saved data unless it
+    independently decides to call get_financial_snapshot first, and it did not —
+    it told the person "I can't see earlier chats unless they're part of this
+    session" even though the facts were sitting in the same workspace it already
+    had tool access to. This removes the model's discretion by putting the actual
+    data in front of it before the conversation starts.
+    """
+    if session.conversation_mode != "returning" or not session.finance_store:
+        return ""
+    try:
+        snapshot = await session.finance_store.workspace(session.owner)
+    except Exception:  # noqa: BLE001 - a fetch failure here must not block the call starting
+        return ""
+    return format_existing_facts(tool_snapshot(snapshot))
 
 
 TOOLS = ToolsSchema(
@@ -94,23 +198,102 @@ TOOLS = ToolsSchema(
                 "category": {
                     "type": "string",
                     "enum": ["opening_cash", "income", "commitment", "expense"],
+                    "description": "Required when creating a new fact. Omit when correcting "
+                    "an existing fact via fact_id and the category itself is not changing.",
                 },
-                "label": {"type": "string", "description": "Short neutral label."},
-                "amount_rupees": {"type": "integer", "minimum": 0},
+                "label": {
+                    "type": "string",
+                    "description": "Short neutral label. Required when creating a new fact. "
+                    "Omit when correcting an existing fact via fact_id and the label itself "
+                    "is not changing.",
+                },
+                "amount_rupees": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The amount, when the person gave one number. Required for "
+                    "a brand new fact (omit only if giving min_amount_rupees and "
+                    "max_amount_rupees instead). When correcting an existing fact with "
+                    "fact_id and only some other detail changed (a recurring day, a "
+                    "restriction, marking it paid), omit this entirely — the existing "
+                    "amount is kept automatically, you never need to resupply it.",
+                },
+                "min_amount_rupees": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Only when the person gave a range (for example 'sixty to "
+                    "seventy thousand'). Must be given together with max_amount_rupees.",
+                },
+                "max_amount_rupees": {"type": "integer", "minimum": 0},
+                "usable_amount_rupees": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Only when the person said only part of this amount can be "
+                    "used for this plan (for example savings capped at a limit they set). "
+                    "Omit when the full amount is usable.",
+                },
+                "restricted": {
+                    "type": "boolean",
+                    "description": "True only when the person said this money cannot be used "
+                    "for this plan at all (for example business cash that is not personal "
+                    "money). Restricted money is still recorded and shown, never spent in the "
+                    "plan. Omit or leave false otherwise.",
+                },
+                "resolved": {
+                    "type": "boolean",
+                    "description": "True only when the person said this exact fact is now "
+                    "paid, settled, or no longer applies. Requires fact_id — this always "
+                    "corrects an existing fact, never creates a new one. A resolved fact is "
+                    "excluded from every future snapshot and calculation but stays in "
+                    "history. Omit or leave false otherwise.",
+                },
                 "due_date": {
                     "type": "string",
-                    "description": "ISO date YYYY-MM-DD only when known.",
+                    "description": "ISO date YYYY-MM-DD only when this is a single, one-time "
+                    "date. Never use this for something that repeats every month (salary, "
+                    "rent, an EMI on the same day each month) — use recurring_day_of_month "
+                    "for that instead, and omit due_date entirely.",
+                },
+                "recurring_day_of_month": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 31,
+                    "description": "Only when the person describes money that repeats on the "
+                    "same calendar day every month (salary on the 1st, rent on the 5th, an "
+                    "EMI due the 10th of every month) — the day number only, for example 1 for "
+                    "'first of every month'. Never ask which month or year for this: it repeats "
+                    "every month by definition. Omit due_date when using this.",
                 },
                 "certainty": {
                     "type": "string",
                     "enum": ["confirmed", "estimated", "uncertain", "unknown"],
+                    "description": "Required when creating a new fact — never guess it, ask if "
+                    "unclear. 'uncertain' for money that may or may not arrive (a receivable "
+                    "with no confirmed date) — it is tracked but never counted as available "
+                    "until confirmed. Use 'estimated' for a real, expected amount that is "
+                    "simply approximate or a range, such as variable monthly income. Omit "
+                    "when correcting an existing fact via fact_id and certainty itself is not "
+                    "changing — it is kept exactly as it was.",
                 },
                 "fact_id": {
                     "type": "string",
-                    "description": "Existing id only when correcting a fact.",
+                    "description": "Existing id only when correcting a fact. This makes the "
+                    "call a patch: only send the fields that are actually changing, "
+                    "everything else about the fact is kept exactly as it was.",
+                },
+                "timing_note": {
+                    "type": "string",
+                    "description": "Optional short caveat on top of a date or recurring day "
+                    "that is not itself a date, for example 'may arrive as late as the "
+                    "2nd'. Never invent one; only record what the person actually said.",
                 },
             },
-            ["category", "label", "amount_rupees", "certainty"],
+            # Nothing is unconditionally required here: a brand-new fact needs
+            # category, label, an amount (or range), and certainty, but a
+            # correction (fact_id given) needs only fact_id plus whatever is
+            # actually changing — a static schema can't express "required
+            # unless correcting", so that split is enforced with a clear,
+            # actionable rejection message at the validation layer instead.
+            [],
         ),
         FunctionSchema(
             "get_financial_snapshot",
@@ -122,19 +305,9 @@ TOOLS = ToolsSchema(
 )
 
 
-def _tool_snapshot(snapshot) -> dict:
-    return {
-        "revision": snapshot.revision,
-        "plan_status": snapshot.plan_status,
-        "facts": {
-            "income": len(snapshot.income),
-            "commitments": len(snapshot.commitments),
-            "expenses": len(snapshot.expenses),
-            "opening_cash_paise": snapshot.opening_cash_paise,
-        },
-        "summary": snapshot.summary.model_dump(mode="json"),
-        "timeline": [event.model_dump(mode="json") for event in snapshot.timeline],
-    }
+# Re-exported for the realtime pipeline and any other caller; the implementation
+# lives in app.finance since it is pure data shaping, unrelated to any voice engine.
+_tool_snapshot = tool_snapshot
 
 
 async def _trace(
@@ -243,7 +416,7 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
     try:
         arguments = dict(params.arguments)
         arguments["operation_id"] = uuid4()
-        snapshot = await session.finance_store.record(
+        snapshot, fact = await session.finance_store.record(
             session.owner, FinancialFactInput.model_validate(arguments)
         )
         logger.info(
@@ -257,30 +430,74 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
             role="tool",
             metadata={"tool": "record_financial_fact", "revision": snapshot.revision},
         )
-        await params.result_callback({"ok": True, "workspace": _tool_snapshot(snapshot)})
-    except (ValidationError, ValueError) as error:
-        fields = (
-            [".".join(str(part) for part in item["loc"]) for item in error.errors()]
-            if isinstance(error, ValidationError)
-            else ["unknown"]
+        await params.result_callback(
+            {
+                "status": "success",
+                "revision": snapshot.revision,
+                "fact": fact,
+                "workspace": _tool_snapshot(snapshot),
+            }
         )
+    except FactNotFoundError:
+        # A named, unambiguous reason distinct from every other rejection: the
+        # person and the model both said something coherent, there is simply no
+        # such fact_id to correct (stale id, already resolved). Never something
+        # for the model to re-ask the person's own information about.
         logger.warning(
-            "voice_tool_rejected session_id={} tool=record_financial_fact error_type={} fields={}",
+            "voice_tool_rejected session_id={} tool=record_financial_fact error_code=fact_not_found",
             session.id,
-            type(error).__name__,
-            fields,
         )
         await _trace(
             session,
             "tool_rejected",
             role="tool",
-            metadata={"tool": "record_financial_fact", "fields": fields},
+            metadata={"tool": "record_financial_fact", "error_code": "fact_not_found"},
         )
         await params.result_callback(
             {
-                "ok": False,
-                "error": "The fact was not saved. Ask one short clarification for the missing field; do not retry the same call.",
-                "invalid_fields": fields,
+                "status": "rejected",
+                "error_code": "fact_not_found",
+                "errors": [
+                    {
+                        "field": "fact_id",
+                        "message": "No active financial fact exists with this id. Do not "
+                        "ask the person to repeat information they already gave; either "
+                        "call get_financial_snapshot to find the right id, or record it "
+                        "as a new fact if none of the existing ones match.",
+                    }
+                ],
+            }
+        )
+    except (ValidationError, ValueError) as error:
+        # Every entry always carries a real message; `field` is None only when
+        # the problem is not about any single field (a whole-object rule, such
+        # as "amount is required for a new fact"). This is the actual fix for
+        # the live failure: the model used to receive `invalid_fields: [""]` for
+        # exactly this case — no field name and no message — and, with nothing
+        # to go on, invented unrelated theories (a year, a three-month window)
+        # instead of the real, simple problem.
+        errors = shape_validation_errors(error)
+        logger.warning(
+            "voice_tool_rejected session_id={} tool=record_financial_fact error_type={} errors={}",
+            session.id,
+            type(error).__name__,
+            errors,
+        )
+        await _trace(
+            session,
+            "tool_rejected",
+            role="tool",
+            metadata={
+                "tool": "record_financial_fact",
+                "fields": [e["field"] for e in errors if e["field"]],
+                "messages": [e["message"] for e in errors],
+            },
+        )
+        await params.result_callback(
+            {
+                "status": "rejected",
+                "error_code": "financial_fact_validation_failed",
+                "errors": errors,
             }
         )
     except Exception as error:  # noqa: BLE001 - tool boundary returns a safe result
@@ -294,8 +511,17 @@ async def _record_fact(params: FunctionCallParams, session) -> None:
         )
         await params.result_callback(
             {
-                "ok": False,
-                "error": "The workspace could not save that fact. Ask the person to try again.",
+                "status": "rejected",
+                "error_code": "internal_error",
+                "errors": [
+                    {
+                        "field": None,
+                        "message": "The workspace could not save that fact right now. This "
+                        "is a system problem, not missing information — do not ask the "
+                        "person to repeat anything; briefly say it could not be saved and "
+                        "continue.",
+                    }
+                ],
             }
         )
 
@@ -314,7 +540,9 @@ async def _get_snapshot(params: FunctionCallParams, session) -> None:
             role="tool",
             metadata={"tool": "get_financial_snapshot", "revision": snapshot.revision},
         )
-        await params.result_callback({"ok": True, "workspace": _tool_snapshot(snapshot)})
+        await params.result_callback(
+            {"status": "success", "revision": snapshot.revision, "workspace": _tool_snapshot(snapshot)}
+        )
     except Exception as error:  # noqa: BLE001 - tool boundary returns a safe result
         logger.error(
             "voice_tool_failed session_id={} tool=get_financial_snapshot error_type={}",
@@ -325,7 +553,11 @@ async def _get_snapshot(params: FunctionCallParams, session) -> None:
             session, "tool_failed", role="tool", metadata={"tool": "get_financial_snapshot"}
         )
         await params.result_callback(
-            {"ok": False, "error": "The workspace is temporarily unavailable."}
+            {
+                "status": "rejected",
+                "error_code": "internal_error",
+                "errors": [{"field": None, "message": "The workspace is temporarily unavailable."}],
+            }
         )
 
 
@@ -376,11 +608,12 @@ async def run_cascade(session, settings: Settings) -> None:
         ),
     )
     logger.info("voice_pipeline_stage session_id={} stage=creating_task", session.id)
+    facts_context = await existing_facts_context(session)
     context = LLMContext(
         [
             {
                 "role": "system",
-                "content": f"Today is {datetime.now(ZoneInfo('Asia/Kolkata')).date().isoformat()}.\n{conversation_instruction(session.conversation_mode)}\n{INSTRUCTIONS}",
+                "content": f"Today is {datetime.now(ZoneInfo('Asia/Kolkata')).date().isoformat()}.\n{conversation_instruction(session.conversation_mode)}\n{INSTRUCTIONS}{facts_context}",
             }
         ],
         tools=TOOLS,

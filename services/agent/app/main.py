@@ -33,8 +33,13 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     # Importing the complete Pipecat voice graph can take ~20 seconds in a fresh container.
     # Do it before health becomes ready, never on a user's first call.
-    logger.info("voice_pipeline_warming")
-    from app.voice.pipeline import run_cascade
+    logger.info("voice_pipeline_warming engine={}", settings.voice_engine)
+    # Cascade and realtime share every tool, prompt, session, and tracing concern;
+    # only which pipeline module runs differs, selected by VOICE_ENGINE.
+    if settings.voice_engine == "realtime":
+        from app.voice.realtime_pipeline import run_realtime as run_pipeline
+    else:
+        from app.voice.pipeline import run_cascade as run_pipeline
 
     logger.info("voice_pipeline_warmed")
     app.state.finance = None
@@ -42,7 +47,7 @@ async def lifespan(app: FastAPI):
         app.state.finance = FinanceStore(settings.database_url)
         await app.state.finance.open()
     app.state.voice = VoiceSessions(
-        settings, run_pipeline=run_cascade, finance_store=app.state.finance
+        settings, run_pipeline=run_pipeline, finance_store=app.state.finance
     )
     yield
     await app.state.voice.close()

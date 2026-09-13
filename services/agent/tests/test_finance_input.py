@@ -69,3 +69,131 @@ def test_financial_fact_rejects_date_resolved_far_outside_plausible_window():
     # same way rather than silently saved as fact.
     with pytest.raises(ValidationError):
         _fact("in 300 days")
+
+
+def test_financial_fact_accepts_a_range_and_fills_amount_rupees_with_midpoint():
+    # A kirana owner's "sixty to seventy thousand" shop income — the range must be
+    # kept, not collapsed to one guessed figure, while still giving every other part
+    # of the system (which expects a single amount_rupees) something to work with.
+    fact = FinancialFactInput(
+        operation_id=uuid4(),
+        category="income",
+        label="Shop income",
+        min_amount_rupees=60_000,
+        max_amount_rupees=70_000,
+        certainty="estimated",
+    )
+    assert fact.min_amount_rupees == 60_000
+    assert fact.max_amount_rupees == 70_000
+    assert fact.amount_rupees == 65_000
+
+
+def test_financial_fact_rejects_incomplete_range():
+    with pytest.raises(ValidationError):
+        FinancialFactInput(
+            operation_id=uuid4(), category="income", label="Shop income",
+            min_amount_rupees=60_000, certainty="estimated",
+        )
+
+
+def test_financial_fact_rejects_inverted_range():
+    with pytest.raises(ValidationError):
+        FinancialFactInput(
+            operation_id=uuid4(), category="income", label="Shop income",
+            min_amount_rupees=70_000, max_amount_rupees=60_000, certainty="estimated",
+        )
+
+
+def test_financial_fact_rejects_missing_amount_and_range():
+    with pytest.raises(ValidationError):
+        FinancialFactInput(operation_id=uuid4(), category="income", label="Shop income")
+
+
+def test_financial_fact_accepts_usable_cap_on_protected_savings():
+    # Ananya's "sixty thousand saved, but I don't want to use more than fifteen".
+    fact = FinancialFactInput(
+        operation_id=uuid4(), category="opening_cash", label="Savings",
+        amount_rupees=60_000, usable_amount_rupees=15_000,
+    )
+    assert fact.amount_rupees == 60_000
+    assert fact.usable_amount_rupees == 15_000
+
+
+def test_financial_fact_rejects_usable_cap_larger_than_amount():
+    with pytest.raises(ValidationError):
+        FinancialFactInput(
+            operation_id=uuid4(), category="opening_cash", label="Savings",
+            amount_rupees=15_000, usable_amount_rupees=60_000,
+        )
+
+
+def test_financial_fact_accepts_restricted_money():
+    # Ramesh's shop-drawer cash: "No, I cannot use that. That is shop money."
+    fact = FinancialFactInput(
+        operation_id=uuid4(), category="opening_cash", label="Shop drawer cash",
+        amount_rupees=15_000, restricted=True,
+    )
+    assert fact.restricted is True
+
+
+def test_financial_fact_accepts_resolved_correction_with_fact_id():
+    # "I paid that card off" must correct the existing fact, not create a new
+    # "(paid)" one — the exact workaround observed live that left three separate
+    # credit-card-shaped records instead of one.
+    fact = FinancialFactInput(
+        operation_id=uuid4(), category="commitment", label="Credit card repayment",
+        amount_rupees=5_000, fact_id=uuid4(), resolved=True,
+    )
+    assert fact.resolved is True
+
+
+def test_financial_fact_rejects_resolved_without_fact_id():
+    # There is no such thing as recording a brand-new fact that is already paid —
+    # "resolved" only ever corrects something that already exists.
+    with pytest.raises(ValidationError):
+        FinancialFactInput(
+            operation_id=uuid4(), category="commitment", label="Credit card repayment",
+            amount_rupees=5_000, resolved=True,
+        )
+
+
+def test_financial_fact_accepts_recurring_day_of_month_with_no_due_date():
+    # The live failure this fixes: "salary arrives first of every month" is not a
+    # due_date at all — dateparser has no concept of a repeating date, and forcing
+    # it through due_date produced a tool_rejected loop that made a person hang
+    # up. recurring_day_of_month is its own field, no due_date required.
+    fact = FinancialFactInput(
+        operation_id=uuid4(), category="income", label="Salary",
+        amount_rupees=50_000, recurring_day_of_month=1, certainty="confirmed",
+    )
+    assert fact.recurring_day_of_month == 1
+    assert fact.due_date is None
+
+
+def test_financial_fact_rejects_recurring_day_of_month_out_of_range():
+    with pytest.raises(ValidationError):
+        FinancialFactInput(
+            operation_id=uuid4(), category="income", label="Salary",
+            amount_rupees=50_000, recurring_day_of_month=32,
+        )
+
+
+def test_financial_fact_extracts_recurring_day_from_due_date_text_as_a_fallback():
+    # Defense in depth: even if a model lapses back into describing this through
+    # due_date text instead of the dedicated field, the exact live phrasing must
+    # resolve to a recurring fact, not an unparseable-date rejection.
+    fact = FinancialFactInput(
+        operation_id=uuid4(), category="income", label="Salary",
+        amount_rupees=50_000, due_date="first of every month",
+    )
+    assert fact.recurring_day_of_month == 1
+    assert fact.due_date is None
+
+
+def test_financial_fact_extracts_recurring_day_from_numeric_due_date_text():
+    fact = FinancialFactInput(
+        operation_id=uuid4(), category="commitment", label="Rent",
+        amount_rupees=15_000, due_date="5th of every month",
+    )
+    assert fact.recurring_day_of_month == 5
+    assert fact.due_date is None

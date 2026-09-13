@@ -413,6 +413,50 @@
             ],
             "title": "Amount Paise"
           },
+          "min_amount_paise": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9007199254740991.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Amount Paise"
+          },
+          "max_amount_paise": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9007199254740991.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Amount Paise"
+          },
+          "usable_amount_paise": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9007199254740991.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usable Amount Paise"
+          },
+          "restricted": {
+            "type": "boolean",
+            "title": "Restricted",
+            "default": false
+          },
           "due_date": {
             "anyOf": [
               {
@@ -424,6 +468,31 @@
               }
             ],
             "title": "Due Date"
+          },
+          "recurring_day_of_month": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 31.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recurring Day Of Month"
+          },
+          "timing_note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 140
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timing Note"
           },
           "certainty": {
             "type": "string",
@@ -523,6 +592,27 @@
             "type": "integer",
             "title": "Unplanned Fact Count",
             "default": 0
+          },
+          "uncertain_income_paise": {
+            "type": "integer",
+            "title": "Uncertain Income Paise",
+            "default": 0
+          },
+          "uncertain_outgoings_paise": {
+            "type": "integer",
+            "title": "Uncertain Outgoings Paise",
+            "default": 0
+          },
+          "conditional_closing_paise": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conditional Closing Paise"
           }
         },
         "type": "object",
@@ -767,6 +857,13 @@
               }
             ],
             "title": "Opening Cash Paise"
+          },
+          "opening_cash": {
+            "items": {
+              "$ref": "#/components/schemas/MoneyFact"
+            },
+            "type": "array",
+            "title": "Opening Cash"
           },
           "income": {
             "items": {

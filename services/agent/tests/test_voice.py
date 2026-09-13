@@ -16,6 +16,7 @@ def settings():
         daily_api_key="test",
         elevenlabs_api_key="test",
         openrouter_api_key="test",
+        openai_api_key="test",
         voice_max_sessions=1,
     )
 
@@ -125,3 +126,25 @@ def test_provider_errors_have_stable_public_codes_without_provider_bodies():
     assert classify_voice_error(denied, source="daily").code == "voice_daily_authentication_failed"
     assert classify_voice_error(busy, source="OpenRouterLLMService").code == "voice_openrouter_rate_limited"
     assert classify_voice_error(timeout, source="ElevenLabsTTSService").code == "voice_elevenlabs_timeout"
+
+
+def test_realtime_engine_errors_are_not_mislabeled_as_openrouter():
+    # Both an OpenRouter model name ("gpt-5.6-terra") and the OpenAI Realtime model
+    # ("gpt-realtime-2.1-mini") contain "gpt", so a naive check previously classified
+    # every Realtime-engine failure as an OpenRouter one.
+    error = RuntimeError("do-not-expose-this-body")
+    assert classify_voice_error(error, source="OpenAIRealtimeLLMService").code == "voice_openai_failed"
+    assert classify_voice_error(error, source="OpenRouterLLMService").code == "voice_openrouter_failed"
+
+
+def test_realtime_rate_limit_text_is_classified_as_retryable_rate_limited():
+    # Observed live: OpenAI Realtime delivers a rate-limit rejection as a plain
+    # ErrorFrame description, not an HTTP exception with a status code — the
+    # status-code checks alone would always miss it and fall through to a
+    # generic, less actionable code.
+    description = (
+        "Rate limit reached for gpt-realtime-2.1-mini ... Please try again in 8.736s."
+    )
+    public = classify_voice_error(source="OpenAIRealtimeLLMService", description=description)
+    assert public.code == "voice_openai_rate_limited"
+    assert public.retryable is True

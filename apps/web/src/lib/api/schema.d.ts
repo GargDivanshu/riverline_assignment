@@ -123,8 +123,21 @@ export interface components {
             label: string;
             /** Amount Paise */
             amount_paise?: number | null;
+            /** Min Amount Paise */
+            min_amount_paise?: number | null;
+            /** Max Amount Paise */
+            max_amount_paise?: number | null;
+            /** Usable Amount Paise */
+            usable_amount_paise?: number | null;
+            /**
+             * Restricted
+             * @default false
+             */
+            restricted: boolean;
             /** Due Date */
             due_date?: string | null;
+            /** Recurring Day Of Month */
+            recurring_day_of_month?: number | null;
             /**
              * Certainty
              * @default unknown
@@ -169,6 +182,18 @@ export interface components {
              * @default 0
              */
             unplanned_fact_count: number;
+            /**
+             * Uncertain Income Paise
+             * @default 0
+             */
+            uncertain_income_paise: number;
+            /**
+             * Uncertain Outgoings Paise
+             * @default 0
+             */
+            uncertain_outgoings_paise: number;
+            /** Conditional Closing Paise */
+            conditional_closing_paise?: number | null;
         };
         /** StartVoice */
         StartVoice: {
@@ -278,6 +303,8 @@ export interface components {
             window_end_exclusive: string;
             /** Opening Cash Paise */
             opening_cash_paise?: number | null;
+            /** Opening Cash */
+            opening_cash?: components["schemas"]["MoneyFact"][];
             /** Income */
             income?: components["schemas"]["MoneyFact"][];
             /** Commitments */

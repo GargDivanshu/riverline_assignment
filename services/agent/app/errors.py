@@ -7,7 +7,7 @@ import httpx
 from fastapi import HTTPException
 from loguru import logger
 
-Provider = Literal["daily", "elevenlabs", "openrouter", "transport", "unknown"]
+Provider = Literal["daily", "elevenlabs", "openrouter", "openai", "transport", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,15 @@ def _provider_name(*hints: object) -> Provider:
         return "daily"
     if "eleven" in value or "scribe" in value:
         return "elevenlabs"
-    if "openrouter" in value or "gpt" in value or "llm" in value:
+    if "openrouter" in value:
+        return "openrouter"
+    # Checked before the generic "gpt"/"llm" fallback below: both OpenRouter model
+    # names (e.g. "gpt-5.6-terra") and the OpenAI Realtime model ("gpt-realtime-...")
+    # contain "gpt", so matching that first mislabels every Realtime-engine failure
+    # as an OpenRouter one.
+    if "openai" in value or "realtime" in value:
+        return "openai"
+    if "gpt" in value or "llm" in value:
         return "openrouter"
     if "transport" in value or "websocket" in value:
         return "transport"
@@ -67,6 +75,12 @@ def classify_voice_error(
     if isinstance(error, httpx.HTTPError) and getattr(error, "response", None) is not None:
         status = error.response.status_code
 
+    # Realtime provider errors often arrive as a plain description string with no
+    # httpx response object at all (observed live: an OpenAI rate-limit rejection
+    # delivered as an ErrorFrame, not an HTTP exception) — status-code checks alone
+    # would always miss these and fall through to a generic, less useful code.
+    text = str(description or "").lower()
+
     if status in (401, 403):
         suffix, message, http_status, retryable = (
             "authentication_failed",
@@ -74,7 +88,7 @@ def classify_voice_error(
             503,
             False,
         )
-    elif status == 429:
+    elif status == 429 or "rate limit" in text:
         suffix, message, http_status, retryable = (
             "rate_limited",
             "A voice service is busy. Try again shortly.",
